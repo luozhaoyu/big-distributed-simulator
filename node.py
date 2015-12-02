@@ -24,9 +24,10 @@ def debugprint(msg):
 
 
 class Node(object):
-    def __init__(self, env, cpu_cores=4, memory=8*1024*1024*1024, disk=320*1024*1024*1024, disk_speed=100*1024*1024):
+    def __init__(self, env, node_id, ip="127.0.0.1", cpu_cores=4, memory=8*1024*1024*1024, disk=320*1024*1024*1024, disk_speed=100*1024*1024, default_bandwidth=100*1024*1024/8):
         "One node is a resouce entity"
         self.env = env
+        self.node_id = node_id
 
         #: need to contend for the CPU resource
         self.cpu_cores = cpu_cores
@@ -35,6 +36,8 @@ class Node(object):
         self.disk_speed = simpy.Container(self.env, init=disk_speed, capacity=disk_speed)
         self.disk_events = {}
         self.event_id = 0
+        self.ip = ip
+        self.bandwidth = simpy.Container(self.env, init=default_bandwidth, capacity=default_bandwidth)
 
     def random_write_tasks(self):
         current_time = 0
@@ -85,16 +88,16 @@ class Node(object):
                     print(e)
                     continue
 
-                debugprint("%s\tDiskRequestSuccess?: %s\t%s" % (event_id, request_ideal_disk.processed, self.disk_speed.level))
                 if request_ideal_disk.processed: # I have got disk!
                     current_speed = ideal_speed
                     estimated_finish_time = (total_bytes - written_bytes) / current_speed
-                    debugprint("speed/estimated_finish_time: %6.2f/%6.2f" % (current_speed, estimated_finish_time + self.env.now))
+                    debugprint("%s\tobtained_speed/total_speed: %6.2f/%6.2f\testimated_finish_time: %6.2f"
+                               % (event_id, current_speed, self.disk_speed.capacity - self.disk_speed.level, estimated_finish_time + self.env.now))
                     try:
                         yield self.env.timeout(estimated_finish_time)
                     except simpy.Interrupt as e:
                         written_bytes += current_speed * (self.env.now - e.cause['time'])
-                        debugprint("%s is interrupted %s: %s/%s" % (event_id, e, written_bytes, total_bytes))
+                        debugprint("%s interrupted\t%s\tbytes_written: %s/%s" % (event_id, e, written_bytes, total_bytes))
                         continue
                     break
                 else: # interrupt others!
@@ -116,12 +119,52 @@ class Node(object):
         debugprint("%s\tFINISHED\t%s B written" % (event_id, total_bytes))
 
 
+class Switch(object):
+    def __init__(self, env, default_bandwidth=100*1024*1024/8, latency=0.01):
+        self.env = env
+        self.bandwidth = default_bandwidth
+        self.network = {}
+        self.node_id = 0
+        self.latency = latency
+
+    def add_node(self, node):
+        self.network[node.node_id] = node
+
+    def process_ping(self, from_node_id, to_node_id, packet_size):
+        self.env.process(self._ping(from_node_id, to_node_id, packet_size))
+
+    def heartbeat_ping(self, from_node_id, to_node_id, packet_size):
+        i = 0
+        while i < 120:
+            self.env.run(until=self.env.now + 1)
+            self.process_ping(from_node_id, to_node_id, packet_size)
+            i += 1
+
+    def _ping(self, from_node_id, to_node_id, packet_size=16*1024):
+        if self.network[from_node_id].bandwidth.level > 0 and self.network[to_node_id].bandwidth.level > 0:
+            require_bandwidth = min(self.network[from_node_id].bandwidth.level, self.network[to_node_id].bandwidth.level)
+            yield self.network[from_node_id].bandwidth.get(require_bandwidth) & self.network[to_node_id].bandwidth.get(require_bandwidth)
+            debugprint("%s is pinging %s" % (from_node_id, to_node_id))
+            need_time = 2 * self.latency + float(packet_size) / require_bandwidth
+            # TODO: may be interrupted here
+            yield self.env.timeout(need_time)
+            debugprint("%s finished pinging %s: %4.2fms" % (from_node_id, to_node_id, need_time * 1000))
+            yield self.network[from_node_id].bandwidth.put(require_bandwidth) & self.network[to_node_id].bandwidth.put(require_bandwidth)
+        
+
+
 def main():
     """Main function only in command line"""
     from sys import argv
-    node = Node(env)
+    node = Node(env, 1)
+    node2 = Node(env, 2)
 
     node.random_write_tasks()
+
+    switch = Switch(env)
+    switch.add_node(node)
+    switch.add_node(node2)
+    switch.heartbeat_ping(node.node_id, node2.node_id, 1024)
 
     env.run()
     
