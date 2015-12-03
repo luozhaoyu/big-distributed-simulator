@@ -8,6 +8,8 @@ http://google-styleguide.googlecode.com/svn/trunk/pyguide.html
 """
 __copyright__ = "Zhaoyu Luo"
 
+import random
+
 import simpy
 from simpy.events import AnyOf
 
@@ -20,7 +22,7 @@ env = simpy.Environment()
 
 
 def debugprint(msg):
-    print("[%6.2f] %s" % (env.now, msg))
+    print("[%8.2f] %s" % (env.now, msg))
 
 
 class Node(object):
@@ -59,6 +61,7 @@ class Node(object):
         event_id = self.event_id
         new_event = self.env.process(self.create_disk_write_event(total_bytes, event_id, start_time))
         self.disk_events[event_id] = new_event
+        return new_event
 
     def create_disk_write_event(self, total_bytes, event_id, start_time=0):
         if start_time > 0:
@@ -67,56 +70,57 @@ class Node(object):
         current_speed = 0
 
         while written_bytes < total_bytes:
-            try:
-                if current_speed > 0 and self.disk_speed.level < self.disk_speed.capacity:
+            if current_speed > 0 and self.disk_speed.level < self.disk_speed.capacity:
+                try:
                     yield self.disk_speed.put(min(current_speed, self.disk_speed.capacity - self.disk_speed.level))
-                #: it should slow down, since we are adding new disk write event
-                ideal_speed = int(float(self.disk_speed.capacity) / len(self.disk_events))
-                debugprint("%s\tbytes_written: %s/%s\tspeed_request: %s/%s" % (event_id, written_bytes, total_bytes, ideal_speed, self.disk_speed.level))
-                # Here is a compromise: if I could not obtain disk right now, I will wait for 1 second
-                # then I interrupt others to gain disk
-                request_ideal_disk = self.disk_speed.get(ideal_speed)
-                timeout = 0.1
-                request_timeout = self.env.timeout(timeout)
+                except simpy.Interrupt as e: # try again to put disk control back
+                    continue
+            #: it should slow down, since we are adding new disk write event
+            ideal_speed = int(float(self.disk_speed.capacity) / len(self.disk_events))
 
+            if ideal_speed <= self.disk_speed.level:
+                debugprint("%s\tgot speed\t%4.2f/%4.2f MB written\tspeed_request: %4.1f/%4.1f MB/s"
+                           % (event_id, written_bytes/1024/1024, total_bytes/1024/1024, ideal_speed/1024/1024, self.disk_speed.level/1024/1024))
+                request_ideal_disk = self.disk_speed.get(ideal_speed)
+                timeout = 0.01
+                request_timeout = self.env.timeout(timeout)
                 try:
                     yield request_ideal_disk | request_timeout
-                except simpy.Interrupt as e:
-                    debugprint(e)
+                except simpy.Interrupt as e: # restart to recalculate optimal disk speed
                     continue
-                except SimulatorException as e:
-                    print(e)
-                    continue
+                # request must success
+                assert request_timeout.processed == False and request_ideal_disk.processed == True
 
-                if request_ideal_disk.processed: # I have got disk!
-                    current_speed = ideal_speed
-                    estimated_finish_time = (total_bytes - written_bytes) / current_speed
-                    debugprint("%s\tobtained_speed/total_speed: %6.2f/%6.2f\testimated_finish_time: %6.2f"
-                               % (event_id, current_speed, self.disk_speed.capacity - self.disk_speed.level, estimated_finish_time + self.env.now))
-                    try:
-                        yield self.env.timeout(estimated_finish_time)
-                    except simpy.Interrupt as e:
-                        written_bytes += current_speed * (self.env.now - e.cause['time'])
-                        debugprint("%s interrupted\t%s\tbytes_written: %s/%s" % (event_id, e, written_bytes, total_bytes))
-                        continue
-                    break
-                else: # interrupt others!
-                   # try:
-                   #     request_ideal_disk.fail(SimulatorException("fail myself"))
-                   # except SimulatorException as e:
-                   #     print(e)
-                    if self.disk_speed.capacity > self.disk_speed.level:
-                        yield self.disk_speed.put(self.disk_speed.capacity - self.disk_speed.level)
-                    debugprint("%s\tis interrupting others!" % event_id)
-                    for k, e in self.disk_events.items():
-                        if k != event_id:
-                            e.interrupt({"info": "make a space for new task", "time": self.env.now - timeout})
-            except simpy.Interrupt as e:
-                raise e("it should not happen")
+                current_speed = ideal_speed
+                estimated_finish_time = (total_bytes - written_bytes) / current_speed
+                start_time = self.env.now
+                try:
+                    yield self.env.timeout(estimated_finish_time)
+                except simpy.Interrupt as e:
+                    written_bytes += current_speed * (e.cause['time'] - start_time)
+                    debugprint("%s interrupted\t%s\tprogress: %4.2f MB/%4.2f MB" % (event_id, e, written_bytes/1024/1024, total_bytes/1024/1024))
+                    continue
+                break
+            else:
+                debugprint("%s\tinterrupting\t%4.2f/%4.2f MB written\tspeed_request: %4.1f/%4.1f MB/s"
+                           % (event_id, written_bytes/1024/1024, total_bytes/1024/1024, ideal_speed/1024/1024, self.disk_speed.level/1024/1024))
+                for k, e in self.disk_events.items():
+                    if k != event_id:
+                        e.interrupt({"info": "Task %s needs disk" % event_id, "time": self.env.now})
+                # It MUST wait for a random time to allow interrupted tasks to yield their disk IO
+                try:
+                    yield self.env.timeout(random.random())
+                except simpy.Interrupt: # there is no point to interrupt a poor guy, so just let me ignore that
+                    pass
 
         # event finished
         self.disk_events.pop(event_id)
-        debugprint("%s\tFINISHED\t%s B written" % (event_id, total_bytes))
+        if current_speed > 0 and self.disk_speed.level < self.disk_speed.capacity:
+            yield self.disk_speed.put(min(current_speed, self.disk_speed.capacity - self.disk_speed.level))
+        for k, e in self.disk_events.items():
+            e.interrupt({"info": "%s release disk" % event_id, "time": self.env.now})
+        debugprint("%s\t%i MB written\t%i MB/s bandwidth released\tNow: %i MB/s"
+                   % (event_id, total_bytes/1024/1024, current_speed/1024/1024, self.disk_speed.level/1024/1024))
 
 
 class Switch(object):
@@ -126,7 +130,7 @@ class Switch(object):
         self.network = {}
         self.node_id = 0
         self.latency = latency
-
+ 
     def add_node(self, node):
         self.network[node.node_id] = node
 
@@ -148,9 +152,8 @@ class Switch(object):
             need_time = 2 * self.latency + float(packet_size) / require_bandwidth
             # TODO: may be interrupted here
             yield self.env.timeout(need_time)
-            debugprint("%s finished pinging %s: %4.2fms" % (from_node_id, to_node_id, need_time * 1000))
+            debugprint("%s: %i bytes from %s: time=%4.2fms" % (from_node_id, packet_size, to_node_id, need_time * 1000))
             yield self.network[from_node_id].bandwidth.put(require_bandwidth) & self.network[to_node_id].bandwidth.put(require_bandwidth)
-        
 
 
 def main():
