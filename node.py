@@ -37,46 +37,56 @@ class Node(object):
         self.disk = disk
         self.disk_speed = simpy.Container(self.env, init=disk_speed, capacity=disk_speed)
         self.disk_events = {}
+        self.active_disk_events = {}
         self.event_id = 0
         self.ip = ip
         self.bandwidth = simpy.Container(self.env, init=default_bandwidth, capacity=default_bandwidth)
+        self.is_disk_alive = True
+        self.disk_alive = self.env.event()
+        self.disk_alive.succeed("initial disk is fine")
 
-    def random_write_tasks(self):
-        current_time = 0
-        task_time = [1, 1, 2, 3, 3, 3, 4, 9, 9, 9, 30]
-        for i in task_time:
-            if i == current_time:
-                self.new_disk_write_request(1001*1024*1024)
-            elif i > current_time:
-                try:
-                    self.env.run(until=i)
-                except SimulatorException as e:
-                    print(e)
-                self.new_disk_write_request(1001*1024*1024)
-            current_time = i
+    def process_break_disk(self, delay=0):
+        self.env.process(self.break_disk(delay))
 
-    def new_disk_write_request(self, total_bytes, start_time=0):
+    def break_disk(self, delay=0):
+        if delay > 0:
+            yield self.env.timeout(delay)
+        self.disk_alive = self.env.event()
+        for k, e in self.active_disk_events.items():
+            e.interrupt({"info": "Disk gets broken", "time": self.env.now})
+
+    def process_repair_disk(self, delay=0):
+        self.env.process(self.repair_disk(delay))
+
+    def repair_disk(self, delay=0):
+        if delay > 0:
+            yield self.env.timeout(delay)
+        self.disk_alive.succeed()
+
+    def new_disk_write_request(self, total_bytes, delay=0):
         """This is called by client"""
         self.event_id += 1
         event_id = self.event_id
-        new_event = self.env.process(self.create_disk_write_event(total_bytes, event_id, start_time))
+        new_event = self.env.process(self.create_disk_write_event(total_bytes, event_id, delay))
         self.disk_events[event_id] = new_event
         return new_event
 
-    def create_disk_write_event(self, total_bytes, event_id, start_time=0):
-        if start_time > 0:
-            yield self.env.timeout(start_time)
+    def create_disk_write_event(self, total_bytes, event_id, delay=0):
+        if delay > 0:
+            yield self.env.timeout(delay)
+        self.active_disk_events[event_id] = self.disk_events[event_id]
         written_bytes = 0
         current_speed = 0
 
         while written_bytes < total_bytes:
+            yield self.disk_alive
             if current_speed > 0 and self.disk_speed.level < self.disk_speed.capacity:
                 try:
                     yield self.disk_speed.put(min(current_speed, self.disk_speed.capacity - self.disk_speed.level))
                 except simpy.Interrupt as e: # try again to put disk control back
                     continue
             #: it should slow down, since we are adding new disk write event
-            ideal_speed = int(float(self.disk_speed.capacity) / len(self.disk_events))
+            ideal_speed = int(float(self.disk_speed.capacity) / len(self.active_disk_events))
 
             if ideal_speed <= self.disk_speed.level:
                 debugprint("%s\tgot speed\t%4.2f/%4.2f MB written\tspeed_request: %4.1f/%4.1f MB/s"
@@ -102,24 +112,25 @@ class Node(object):
                     continue
                 break
             else:
-                debugprint("%s\tinterrupting\t%4.2f/%4.2f MB written\tspeed_request: %4.1f/%4.1f MB/s"
-                           % (event_id, written_bytes/1024/1024, total_bytes/1024/1024, ideal_speed/1024/1024, self.disk_speed.level/1024/1024))
-                for k, e in self.disk_events.items():
-                    if k != event_id:
-                        e.interrupt({"info": "Task %s needs disk" % event_id, "time": self.env.now})
                 # It MUST wait for a random time to allow interrupted tasks to yield their disk IO
                 try:
                     yield self.env.timeout(random.random())
                 except simpy.Interrupt: # there is no point to interrupt a poor guy, so just let me ignore that
-                    pass
+                    continue
+                debugprint("%s\tinterrupting\t%4.2f/%4.2f MB written\tspeed_request: %4.1f/%4.1f MB/s"
+                           % (event_id, written_bytes/1024/1024, total_bytes/1024/1024, ideal_speed/1024/1024, self.disk_speed.level/1024/1024))
+                for k, e in self.active_disk_events.items():
+                    if k != event_id:
+                        e.interrupt({"info": "Task %s needs disk" % event_id, "time": self.env.now})
 
         # event finished
         self.disk_events.pop(event_id)
+        self.active_disk_events.pop(event_id)
         if current_speed > 0 and self.disk_speed.level < self.disk_speed.capacity:
             yield self.disk_speed.put(min(current_speed, self.disk_speed.capacity - self.disk_speed.level))
-        for k, e in self.disk_events.items():
+        for k, e in self.active_disk_events.items():
             e.interrupt({"info": "%s release disk" % event_id, "time": self.env.now})
-        debugprint("%s\t%i MB written\t%i MB/s bandwidth released\tNow: %i MB/s"
+        debugprint("%s\t%i MB written\t%i MB/s bandwidth released\tidle disk: %i MB/s"
                    % (event_id, total_bytes/1024/1024, current_speed/1024/1024, self.disk_speed.level/1024/1024))
 
 
@@ -134,27 +145,31 @@ class Switch(object):
     def add_node(self, node):
         self.network[node.node_id] = node
 
-    def process_ping(self, from_node_id, to_node_id, packet_size):
-        self.env.process(self._ping(from_node_id, to_node_id, packet_size))
+    def process_ping(self, from_node_id, to_node_id, packet_size, seq=0):
+        self.env.process(self._ping(from_node_id, to_node_id, packet_size, seq))
 
     def heartbeat_ping(self, from_node_id, to_node_id, packet_size):
         i = 0
         while i < 120:
             self.env.run(until=self.env.now + 1)
-            self.process_ping(from_node_id, to_node_id, packet_size)
+            self.process_ping(from_node_id, to_node_id, packet_size, i)
             i += 1
 
-    def _ping(self, from_node_id, to_node_id, packet_size=16*1024):
+    def _ping(self, from_node_id, to_node_id, packet_size=16*1024, seq=0):
         if self.network[from_node_id].bandwidth.level > 0 and self.network[to_node_id].bandwidth.level > 0:
             require_bandwidth = min(self.network[from_node_id].bandwidth.level, self.network[to_node_id].bandwidth.level)
             yield self.network[from_node_id].bandwidth.get(require_bandwidth) & self.network[to_node_id].bandwidth.get(require_bandwidth)
-            debugprint("%s is pinging %s" % (from_node_id, to_node_id))
             need_time = 2 * self.latency + float(packet_size) / require_bandwidth
             # TODO: may be interrupted here
             yield self.env.timeout(need_time)
-            debugprint("%s: %i bytes from %s: time=%4.2fms" % (from_node_id, packet_size, to_node_id, need_time * 1000))
+            debugprint("%s: %i bytes from %s: seq=%i ttl=63 time=%4.2fms" % (from_node_id, packet_size, to_node_id, seq, need_time * 1000))
             yield self.network[from_node_id].bandwidth.put(require_bandwidth) & self.network[to_node_id].bandwidth.put(require_bandwidth)
 
+
+def random_write_tasks(node):
+    task_time = [1, 1, 2, 3, 3, 3, 4, 9, 9, 9, 30]
+    for i in task_time:
+        node.new_disk_write_request(1001*1024*1024, i)
 
 def main():
     """Main function only in command line"""
@@ -162,7 +177,9 @@ def main():
     node = Node(env, 1)
     node2 = Node(env, 2)
 
-    node.random_write_tasks()
+    random_write_tasks(node)
+    node.process_break_disk(50)
+    node.process_repair_disk(80)
 
     switch = Switch(env)
     switch.add_node(node)
