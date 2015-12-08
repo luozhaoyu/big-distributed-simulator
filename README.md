@@ -13,3 +13,6 @@ In fact, it is not a big distributed simulator
 ## TODO
 * find a way to monitor discrete events
 * find a way to communicate between processes (events), e.g., broadcasting
+
+## Run
+`make`
