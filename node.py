@@ -11,22 +11,29 @@ __copyright__ = "Zhaoyu Luo"
 import random
 
 import simpy
-from simpy.events import AnyOf
+from simpy.events import AllOf
 
 
 class SimulatorException(Exception):
     pass
 
 
-def _debugprint(env, msg):
-    print("[%8.2f] %s" % (env.now, msg))
+def _debugprint(env, msg, do=False):
+    if do:
+        print("[%8.2f] %s" % (env.now, msg))
 
 
-class Node(object):
-    def __init__(self, env, node_id, ip="127.0.0.1", cpu_cores=4, memory=8*1024*1024*1024, disk=320*1024*1024*1024, disk_speed=100*1024*1024, default_bandwidth=100*1024*1024/8, disk_buffer=64*1024*1024):
+class BaseSim(object):
+    def print(self, msg):
+        msg = "id:%s\t%s" % (self.id, msg)
+        _debugprint(self.env, msg)
+
+
+class Node(BaseSim):
+    def __init__(self, env, node_id, ip="127.0.0.1", cpu_cores=4, memory=8*1024*1024*1024, disk=320*1024*1024*1024, disk_speed=80*1024*1024, default_bandwidth=100*1024*1024/8, disk_buffer=64*1024*1024):
         "One node is a resouce entity"
         self.env = env
-        self.node_id = node_id
+        self.id = node_id
 
         #: need to contend for the CPU resource
         self.cpu_cores = cpu_cores
@@ -37,9 +44,9 @@ class Node(object):
         self.memory_speed = 10 * 1024 * 1024 * 1024
 
         self.memory_controller = simpy.Resource(self.env, capacity=1)
-        self.disk_speed = simpy.Container(self.env, init=disk_speed, capacity=disk_speed)
         self.disk_buffer = simpy.Container(self.env, init=disk_buffer, capacity=disk_buffer)
         self.bandwidth = simpy.Container(self.env, init=default_bandwidth, capacity=default_bandwidth)
+        self.set_disk_speed(disk_speed)
 
         self.disk_events = {}
         self.active_disk_events = {}
@@ -52,9 +59,8 @@ class Node(object):
         self.disk_buffer_full = self.env.event()
         self.init_disk_flush_loop()
 
-    def print(self, msg):
-        msg = "node:%s\t%s" % (self.node_id, msg)
-        _debugprint(self.env, msg)
+    def set_disk_speed(self, disk_speed):
+        self.disk_speed = simpy.Container(self.env, init=disk_speed, capacity=disk_speed)
 
     def process_break_disk(self, delay=0):
         self.env.process(self._break_disk(delay))
@@ -199,22 +205,19 @@ class Node(object):
                    % (event_id, total_bytes/1024/1024, current_speed/1024/1024, self.disk_speed.level/1024/1024))
 
 
-class Switch(object):
-    def __init__(self, env, default_bandwidth=100*1024*1024/8, latency=0.01):
+class Switch(BaseSim):
+    def __init__(self, env, switch_id="switch", default_bandwidth=100*1024*1024/8, latency=0.001):
         self.env = env
         self.bandwidth = default_bandwidth
         self.network = {}
-        self.node_id = 0
+        self.id = switch_id
         self.latency = latency
-
-    def print(self, msg):
-        _debugprint(self.env, msg)
  
     def add_node(self, node):
-        self.network[node.node_id] = node
+        self.network[node.id] = node
 
     def process_ping(self, from_node_id, to_node_id, packet_size, seq=0):
-        self.env.process(self._ping(from_node_id, to_node_id, packet_size, seq))
+        return self.env.process(self._ping(from_node_id, to_node_id, packet_size))
 
     def heartbeat_ping(self, from_node_id, to_node_id, packet_size):
         i = 0
@@ -223,15 +226,113 @@ class Switch(object):
             self.process_ping(from_node_id, to_node_id, packet_size, i)
             i += 1
 
-    def _ping(self, from_node_id, to_node_id, packet_size=16*1024, seq=0):
-        if self.network[from_node_id].bandwidth.level > 0 and self.network[to_node_id].bandwidth.level > 0:
-            require_bandwidth = min(self.network[from_node_id].bandwidth.level, self.network[to_node_id].bandwidth.level)
-            yield self.network[from_node_id].bandwidth.get(require_bandwidth) & self.network[to_node_id].bandwidth.get(require_bandwidth)
-            need_time = 2 * self.latency + float(packet_size) / require_bandwidth
-            # TODO: may be interrupted here
-            yield self.env.timeout(need_time)
-            self.print("%s: %i bytes from %s: seq=%i ttl=63 time=%4.2fms" % (from_node_id, packet_size, to_node_id, seq, need_time * 1000))
-            yield self.network[from_node_id].bandwidth.put(require_bandwidth) & self.network[to_node_id].bandwidth.put(require_bandwidth)
+    def _ping(self, from_node_id, to_node_id, packet_size=16*1024):
+        """TODO: need to implement slow start"""
+        sent_size = 0
+        while sent_size < packet_size:
+            require_bandwidth = int(min(self.network[from_node_id].bandwidth.level, self.network[to_node_id].bandwidth.level))
+            if require_bandwidth > 0:
+                yield self.network[from_node_id].bandwidth.get(require_bandwidth) & self.network[to_node_id].bandwidth.get(require_bandwidth)
+                yield self.env.timeout(self.latency)
+                need_time = float(packet_size-sent_size) / require_bandwidth
+                # TODO: may be interrupted here
+                yield self.env.timeout(need_time)
+                yield self.env.timeout(self.latency)
+                self.print("%s->%s:%i/%i B transferred\ttime=%4.2fms" % (from_node_id, to_node_id, packet_size-sent_size, packet_size, need_time * 1000))
+
+                yield self.network[from_node_id].bandwidth.put(require_bandwidth) & self.network[to_node_id].bandwidth.put(require_bandwidth)
+
+                sent_size += need_time * require_bandwidth
+            else:
+                sleep_time = random.random()
+                self.print("%s->%s bandwidth is not enough, sleep %4.2f s" % (from_node_id, to_node_id, sleep_time))
+                yield self.env.timeout(sleep_time)
+
+
+class NameNode(Node):
+    def __init__(self, env, node_id):
+        super(NameNode, self).__init__(env, node_id)
+        #: store files' placement
+        self.metadata = {}
+        self.datanodes = {}
+        
+    def query_file(self, file_name):
+        return self.metadata.get(file_name)
+
+    def find_datanodes_for_new_file(self, file_name, size, replica_number):
+        return random.sample(self.datanodes.keys(), replica_number)
+
+
+class HDFS(BaseSim):
+
+    def __init__(self, env, namenode, replica_number=3):
+        super(BaseSim, self).__init__()
+
+        self.env = env
+        self.id = "HDFS"
+
+        self.pipeline_packet_size = 1024 * 1024
+        self.replica_number = replica_number
+        self.enable_datanode_cache = True
+
+        self.switch = Switch(env)
+        self.client = Node(env, "client")
+        self.switch.add_node(self.client)
+        self.set_namenode(namenode)
+
+    def set_namenode(self, node):
+        self.namenode = node
+        self.switch.add_node(node)
+        self.datanodes = self.namenode.datanodes
+
+    def add_datanode(self, node):
+        self.datanodes[node.id] = node
+        self.switch.add_node(node)
+
+    def transfer_data(self, from_node_id, to_node_id, size):
+        return self.env.process(self._transfer_data(from_node_id, to_node_id, size))
+
+    def _transfer_data(self, from_node_id, to_node_id, size):
+        yield self.switch.process_ping(from_node_id, to_node_id, size)
+        if self.enable_datanode_cache:
+            yield self.datanodes[to_node_id].new_disk_buffer_write_request(size)
+        else:
+            yield self.datanodes[to_node_id].new_disk_write_request(size)
+
+    def replicate_file(self, file_name, size, node_sequence):
+        return self.env.process(self._replicate_file(file_name, size, node_sequence))
+
+    def _replicate_file(self, file_name, size, node_sequence):
+        i = 0
+        while i < len(node_sequence) - 1:
+            yield self.transfer_data(node_sequence[i], node_sequence[i+1], size)
+            i += 1
+        self.print("%s is replicated in %s" % (file_name, node_sequence))
+
+    def process_put_file(self, file_name, size):
+        return self.env.process(self._put_file(file_name, size))
+
+    def _put_file(self, file_name, size):
+        # ask namenode for 3 datanode
+        yield self.env.timeout(self.switch.latency)
+        datanode_names = self.namenode.find_datanodes_for_new_file(file_name, size, self.replica_number)
+        datanode_names.insert(0, self.client.id)
+        self.print(datanode_names)
+
+        # pipeline writing (divide into packets) to 3 datanodes
+        sent_file_size = 0
+        pipeline_events = []
+        i = 1
+        while sent_file_size < size:
+            sending_size = min(self.pipeline_packet_size, size - sent_file_size)
+            p = self.replicate_file("%s.%i" % (file_name, i), sending_size, datanode_names)
+            pipeline_events.append(p)
+            sent_file_size += sending_size
+            i += 1
+
+        # wait for all ACKs
+        yield AllOf(self.env, pipeline_events)
+        print("[%4.2f] ALL ACKs collected, put_file %s finished" % (self.env.now, file_name))
 
 
 def main():

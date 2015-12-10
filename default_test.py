@@ -21,7 +21,6 @@ class TestDefault(unittest.TestCase):
         self.env = env
         self.node = node.Node(self.env, 1)
         self.node2 = node.Node(self.env, 2)
-        self.switch = node.Switch(self.env)
 
     def test_disk_write(self):
         def random_write_tasks(node):
@@ -43,10 +42,19 @@ class TestDefault(unittest.TestCase):
         random_write_tasks(self.node)
         self.env.run(290)
 
+
+class TestSwitch(unittest.TestCase):
+    def setUp(self):
+        env = simpy.Environment()
+        self.env = env
+        self.node = node.Node(self.env, 1)
+        self.node2 = node.Node(self.env, 2)
+        self.switch = node.Switch(self.env)
+
     def test_ping(self):
         self.switch.add_node(self.node)
         self.switch.add_node(self.node2)
-        self.switch.heartbeat_ping(self.node.node_id, self.node2.node_id, 1024)
+        self.switch.heartbeat_ping(self.node.id, self.node2.id, 100*1024*1024)
 
         self.env.run(300)
 
