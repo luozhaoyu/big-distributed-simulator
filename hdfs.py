@@ -8,6 +8,8 @@ Google Python Style Guide:
 """
 __copyright__ = "Zhaoyu Luo"
 
+import argparse
+
 import simpy
 from simpy.events import AllOf
 
@@ -82,6 +84,10 @@ class HDFS(node.BaseSim):
         self.switch.add_node(node)
         self.datanodes = self.namenode.datanodes
 
+    def create_datanode(self, node_id, **kwargs):
+        datanode = node.DataNode(self.env, node_id, hdfs=self, **kwargs)
+        self.add_datanode(datanode)
+
     def add_datanode(self, node):
         self.datanodes[node.id] = node
         self.switch.add_node(node)
@@ -148,10 +154,11 @@ class HDFS(node.BaseSim):
         pass
 
 
-def create_hdfs(number_of_datanodes=3, replica_number=3, enable_block_report=True, enable_heartbeats=True,
+def create_hdfs(env=None, number_of_datanodes=3, replica_number=3, enable_block_report=True, enable_heartbeats=True,
                 default_bandwidth=100*1024*1024/8, default_disk_speed=80*1024*1024, heartbeat_interval=3,
                 heartbeat_size=16*1024, block_report_interval=30):
-    env = simpy.Environment()
+    if not env:
+        env = simpy.Environment()
     hdfs = HDFS(env, namenode=None, replica_number=replica_number,
                           enable_block_report=enable_block_report, enable_heartbeats=enable_heartbeats,
                           heartbeat_interval=heartbeat_interval, heartbeat_size=heartbeat_size,
@@ -160,8 +167,7 @@ def create_hdfs(number_of_datanodes=3, replica_number=3, enable_block_report=Tru
     hdfs.set_namenode(namenode)
 
     for i in range(number_of_datanodes):
-        datanode = node.DataNode(env, "datanode%i" % i, hdfs=hdfs, disk_speed=default_disk_speed)
-        hdfs.add_datanode(datanode)
+        hdfs.create_datanode("datanode%i" % i, disk_speed=default_disk_speed, default_bandwidth=default_bandwidth)
 
     return hdfs
 
@@ -169,9 +175,13 @@ def create_hdfs(number_of_datanodes=3, replica_number=3, enable_block_report=Tru
 def main():
     """Main function only in command line"""
     from sys import argv
-    hdfs = create_hdfs(number_of_datanodes=3)
-    hdfs.run_until(100)
-    #hdfs.limplock_create_30_files()
+    parser = argparse.ArgumentParser(description='Process some integers.')
+    parser.add_argument('--disk-speed', type=int, default=80*1024*1024, help='disk speed')
+    args = parser.parse_args()
+    print(args)
+
+    hdfs = create_hdfs(number_of_datanodes=3, default_disk_speed=args.disk_speed)
+    hdfs.limplock_create_30_files()
 
 
 if __name__ == '__main__':
