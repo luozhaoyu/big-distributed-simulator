@@ -34,7 +34,11 @@ class BaseSim(object):
 
     def debug(self, msg):
         msg = "DEBUG\tid:%s\t%s" % (self.id, msg)
-        _debugprint(self.env, msg, do=False)
+        _debugprint(self.env, msg, do=True)
+
+    def critical(self, msg):
+        msg = "CRITICAL\tid:%s\t%s" % (self.id, msg)
+        _debugprint(self.env, msg, do=True)
 
 
 class Node(BaseSim):
@@ -228,7 +232,7 @@ class Switch(BaseSim):
     def add_node(self, node):
         self.network[node.id] = node
 
-    def process_ping(self, from_node_id, to_node_id, packet_size, seq=0):
+    def process_ping(self, from_node_id, to_node_id, packet_size):
         return self.env.process(self._ping(from_node_id, to_node_id, packet_size))
 
     def stop_heartbeat(self, from_node_id, to_node_id):
@@ -261,29 +265,61 @@ class Switch(BaseSim):
                 # TODO: may be interrupted here
                 yield self.env.timeout(need_time)
                 yield self.env.timeout(self.latency)
-                self.info("%s->%s:%i/%i B transferred\ttime=%4.2fms" % (from_node_id, to_node_id, packet_size-sent_size, packet_size, need_time * 1000))
+                self.debug("%s->%s:%4.0f/%4.0f KB\ttime=%4.2fms" %
+                           (from_node_id, to_node_id, float(packet_size-sent_size) / 1024, float(packet_size) / 1024, need_time * 1000))
 
                 yield self.network[from_node_id].bandwidth.put(require_bandwidth) & self.network[to_node_id].bandwidth.put(require_bandwidth)
 
                 sent_size += need_time * require_bandwidth
             else:
                 sleep_time = random.random()
-                self.debug("%s->%s bandwidth is not enough, sleep %4.2f s" % (from_node_id, to_node_id, sleep_time))
+                self.debug("%s->%s bandwidth is not enough, sleep %4.2fs" % (from_node_id, to_node_id, sleep_time))
                 yield self.env.timeout(sleep_time)
 
 
 class NameNode(Node):
-    def __init__(self, env, node_id):
+    def __init__(self, env, node_id, hdfs=None):
         super(NameNode, self).__init__(env, node_id)
         #: store files' placement
         self.metadata = {}
         self.datanodes = {}
+        self.hdfs = hdfs
+
+    def __str__(self):
+        return "%s:\n%s" % (self.id, self.metadata)
         
     def query_file(self, file_name):
         return self.metadata.get(file_name)
 
     def find_datanodes_for_new_file(self, file_name, size, replica_number):
         return random.sample(self.datanodes.keys(), replica_number)
+
+    def register_file(self, file_name, datanode_names):
+        self.metadata[file_name] = datanode_names
+
+        
+class DataNode(Node):
+    def __init__(self, env, node_id, hdfs=None, **kwargs):
+        super(DataNode, self).__init__(env, node_id, **kwargs)
+        self.hdfs = hdfs
+        self.doing_block_report = False
+
+    def get_block_report(self):
+        #: TODO: I am assuming block report is a static value, not generated according to the stored blocks
+        block_report_size = 1234 * 1024
+        return block_report_size
+
+    def start_block_report(self, interval):
+        self.env.process(self._start_block_report(interval))
+
+    def _start_block_report(self, interval):
+        self.doing_block_report = True
+        self.info("start block report every %is" % interval)
+        while self.doing_block_report:
+            report_size = self.get_block_report()
+            yield self.hdfs.switch.process_ping(self.id, self.hdfs.namenode.id, report_size)
+            yield self.env.timeout(interval)
+        self.info("end block report")
 
 
 def main():

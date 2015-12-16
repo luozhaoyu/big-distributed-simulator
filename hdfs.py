@@ -34,13 +34,15 @@ class HDFS(node.BaseSim):
         self.enable_block_report = enable_block_report
         self.heartbeat_size = heartbeat_size
         self.heartbeat_interval = heartbeat_interval
+        self.block_report_interval = block_report_interval
 
         self.switch = node.Switch(env)
         self.client = node.Node(env, "client")
         self.switch.add_node(self.client)
 
         self.datanodes = {}
-        self.set_namenode(namenode)
+        if namenode:
+            self.set_namenode(namenode)
 
     def start_services(self):
         if self.enable_heartbeats:
@@ -57,16 +59,23 @@ class HDFS(node.BaseSim):
         self.env.run(until)
 
     def start_block_report(self):
-        print("TODO: please implement HDFS heartbeat")
+        if len(self.datanodes) < 1 or not self.namenode:
+            self.critical("fail to start block report: no datanode exists")
+            return
+
+
+        for node_name in self.datanodes:
+            self.datanodes[node_name].start_block_report(self.block_report_interval)
+        self.critical("start HDFS block report")
 
     def start_hdfs_heartbeat(self):
         if len(self.datanodes) < 1 or not self.namenode:
-            print("fail to start HDFS heartbeat: no datanode exists")
+            self.critical("fail to start HDFS heartbeat: no datanode exists")
             return
 
         for node_name in self.datanodes:
             self.switch.start_heartbeat(node_name, self.namenode.id, self.heartbeat_size, self.heartbeat_interval)
-        print("start HDFS heartbeat")
+        self.critical("start HDFS heartbeat")
 
     def set_namenode(self, node):
         self.namenode = node
@@ -120,22 +129,38 @@ class HDFS(node.BaseSim):
 
         # wait for all ACKs
         yield AllOf(self.env, pipeline_events)
-        print("[%4.2f] ALL ACKs collected, put_file %s finished" % (self.env.now, file_name))
+        datanode_names.remove(self.client.id)
+        self.namenode.register_file(file_name, datanode_names)
+        self.critical("ALL ACKs collected, put_file %s finished" % (file_name))
+
+    def limplock_create_30_files(self):
+        """create 30 64-MB files"""
+        events = []
+        for i in range(30):
+            e = self.process_put_file("hello.txt.%i" % i, 64*1024*1024)
+            events.append(e)
+        run_all = AllOf(self.env, events)
+        self.run_until(run_all)
+        self.critical(str(self.namenode))
+
+    def limplock_regenerate_90_blocks(self):
+        """regenerate 90 blocks"""
+        pass
 
 
 def create_hdfs(number_of_datanodes=3, replica_number=3, enable_block_report=True, enable_heartbeats=True,
                 default_bandwidth=100*1024*1024/8, default_disk_speed=80*1024*1024, heartbeat_interval=3,
                 heartbeat_size=16*1024, block_report_interval=30):
     env = simpy.Environment()
-    namenode = node.NameNode(env, "namenode")
-    hdfs = HDFS(env, namenode=namenode, replica_number=replica_number,
+    hdfs = HDFS(env, namenode=None, replica_number=replica_number,
                           enable_block_report=enable_block_report, enable_heartbeats=enable_heartbeats,
                           heartbeat_interval=heartbeat_interval, heartbeat_size=heartbeat_size,
                           block_report_interval=block_report_interval)
+    namenode = node.NameNode(env, "namenode", hdfs)
     hdfs.set_namenode(namenode)
 
     for i in range(number_of_datanodes):
-        datanode = node.Node(env, "datanode%i" % i, disk_speed=default_disk_speed)
+        datanode = node.DataNode(env, "datanode%i" % i, hdfs=hdfs, disk_speed=default_disk_speed)
         hdfs.add_datanode(datanode)
 
     return hdfs
@@ -144,8 +169,9 @@ def create_hdfs(number_of_datanodes=3, replica_number=3, enable_block_report=Tru
 def main():
     """Main function only in command line"""
     from sys import argv
-    hdfs = create_hdfs()
-    hdfs.run_until(300)
+    hdfs = create_hdfs(number_of_datanodes=3)
+    hdfs.run_until(100)
+    #hdfs.limplock_create_30_files()
 
 
 if __name__ == '__main__':
