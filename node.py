@@ -103,6 +103,7 @@ class Node(BaseSim):
         return new_event
 
     def init_disk_flush_loop(self):
+        self.info("start disk flush loop")
         self.env.process(self._flush_disk_when_full())
 
     def _flush_disk_when_full(self):
@@ -283,100 +284,6 @@ class NameNode(Node):
 
     def find_datanodes_for_new_file(self, file_name, size, replica_number):
         return random.sample(self.datanodes.keys(), replica_number)
-
-
-class HDFS(BaseSim):
-
-    def __init__(self, env, namenode, replica_number=3):
-        super(BaseSim, self).__init__()
-
-        self.env = env
-        self.id = "HDFS"
-
-        self.pipeline_packet_size = 1024 * 1024
-        self.replica_number = replica_number
-        self.enable_datanode_cache = True
-        self.enable_heartbeats = True
-        self.enable_block_report = True
-        self.heartbeat_size = 1024 * 16
-        self.heartbeat_invterval = 3
-
-        self.switch = Switch(env)
-        self.client = Node(env, "client")
-        self.switch.add_node(self.client)
-
-        self.datanodes = {}
-        self.set_namenode(namenode)
-        if self.enable_heartbeats:
-            self.start_hdfs_heartbeat()
-        if self.enable_block_report:
-            self.start_block_report()
-
-    def start_block_report(self):
-        print("TODO: please implement HDFS heartbeat")
-
-    def start_hdfs_heartbeat(self):
-        if len(self.datanodes) < 1 or not self.namenode:
-            print("fail to start HDFS heartbeat: no datanode exists")
-            return
-
-        for node_name in self.datanodes:
-            self.switch.start_heartbeat(node_name, self.namenode.id, self.heartbeat_size, self.heartbeat_invterval)
-        print("start HDFS heartbeat")
-
-    def set_namenode(self, node):
-        self.namenode = node
-        self.switch.add_node(node)
-        self.datanodes = self.namenode.datanodes
-
-    def add_datanode(self, node):
-        self.datanodes[node.id] = node
-        self.switch.add_node(node)
-
-    def transfer_data(self, from_node_id, to_node_id, size):
-        return self.env.process(self._transfer_data(from_node_id, to_node_id, size))
-
-    def _transfer_data(self, from_node_id, to_node_id, size):
-        yield self.switch.process_ping(from_node_id, to_node_id, size)
-        if self.enable_datanode_cache:
-            yield self.datanodes[to_node_id].new_disk_buffer_write_request(size)
-        else:
-            yield self.datanodes[to_node_id].new_disk_write_request(size)
-
-    def replicate_file(self, file_name, size, node_sequence):
-        return self.env.process(self._replicate_file(file_name, size, node_sequence))
-
-    def _replicate_file(self, file_name, size, node_sequence):
-        i = 0
-        while i < len(node_sequence) - 1:
-            yield self.transfer_data(node_sequence[i], node_sequence[i+1], size)
-            i += 1
-        self.info("%s is replicated in %s" % (file_name, node_sequence))
-
-    def process_put_file(self, file_name, size):
-        return self.env.process(self._put_file(file_name, size))
-
-    def _put_file(self, file_name, size):
-        # ask namenode for 3 datanode
-        yield self.env.timeout(self.switch.latency)
-        datanode_names = self.namenode.find_datanodes_for_new_file(file_name, size, self.replica_number)
-        datanode_names.insert(0, self.client.id)
-        self.info(datanode_names)
-
-        # pipeline writing (divide into packets) to 3 datanodes
-        sent_file_size = 0
-        pipeline_events = []
-        i = 1
-        while sent_file_size < size:
-            sending_size = min(self.pipeline_packet_size, size - sent_file_size)
-            p = self.replicate_file("%s.%i" % (file_name, i), sending_size, datanode_names)
-            pipeline_events.append(p)
-            sent_file_size += sending_size
-            i += 1
-
-        # wait for all ACKs
-        yield AllOf(self.env, pipeline_events)
-        print("[%4.2f] ALL ACKs collected, put_file %s finished" % (self.env.now, file_name))
 
 
 def main():
