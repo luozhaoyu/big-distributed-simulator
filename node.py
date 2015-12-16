@@ -38,7 +38,7 @@ class BaseSim(object):
 
 
 class Node(BaseSim):
-    def __init__(self, env, node_id, ip="127.0.0.1", cpu_cores=4, memory=8*1024*1024*1024, disk=320*1024*1024*1024, disk_speed=80*1024*1024, default_bandwidth=100*1024*1024/8, disk_buffer=64*1024*1024):
+    def __init__(self, env, node_id, ip="127.0.0.1", cpu_cores=4, memory=8*1024*1024*1024, disk=320*1024*1024*1024, disk_speed=80*1024*1024, default_bandwidth=100*1024*1024/8, disk_buffer=512*1024*1024):
         "One node is a resouce entity"
         self.env = env
         self.id = node_id
