@@ -33,6 +33,11 @@ class TestHDFS(unittest.TestCase):
             self.switch.add_node(datanode)
             self.hdfs.add_datanode(datanode)
 
+    def test_basic(self):
+        self.add_datanodes(3)
+        self.hdfs.start_hdfs_heartbeat()
+        self.env.run(300)
+
     def test_write(self):
         self.add_datanodes(11)
 

@@ -54,7 +54,7 @@ class TestSwitch(unittest.TestCase):
     def test_ping(self):
         self.switch.add_node(self.node)
         self.switch.add_node(self.node2)
-        self.switch.heartbeat_ping(self.node.id, self.node2.id, 100*1024*1024)
+        self.switch.start_heartbeat(self.node.id, self.node2.id, 1024*1024, 2)
 
         self.env.run(300)
 
