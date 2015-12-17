@@ -113,12 +113,13 @@ class HDFS(node.BaseSim):
         while i < len(node_sequence) - 1:
             yield self.transfer_data(node_sequence[i], node_sequence[i+1], size, throttle_bandwidth)
             i += 1
-        self.info("%s is replicated in %s" % (file_name, node_sequence))
+        self.info("REPLICATED\t%s\tin %s" % (file_name, node_sequence))
 
-    def process_put_file(self, file_name, size, throttle_bandwidth=-1):
+    def put_file(self, file_name, size, throttle_bandwidth=-1):
         return self.env.process(self._put_file(file_name, size, throttle_bandwidth))
 
     def _put_file(self, file_name, size, throttle_bandwidth=-1):
+        """big file would be splitted into packtes <= 64KB"""
         # ask namenode for available datanodes
         yield self.env.timeout(self.switch.latency)
         datanode_names = self.namenode.find_datanodes_for_new_file(file_name, size, self.replica_number)
@@ -144,11 +145,11 @@ class HDFS(node.BaseSim):
     def create_files(self, num, size, throttle_bandwidth=-1):
         events = []
         for i in range(num):
-            e = self.process_put_file("hello.txt.%i" % i, size, throttle_bandwidth)
+            e = self.put_file("hello.%i.txt" % i, size, throttle_bandwidth)
             events.append(e)
         run_all = AllOf(self.env, events)
         self.run_until(run_all)
-        self.critical(str(self.namenode))
+        self.critical("%i files stored in NameNode" % len(self.namenode.metadata))
 
     def limplock_create_30_files(self):
         """create 30 64-MB files"""
@@ -158,7 +159,6 @@ class HDFS(node.BaseSim):
         """regenerate 90 blocks"""
         self.info("regenerating 90 blocks: throttle_bandwidth: %s" % self.balance_bandwidth)
         self.create_files(90, 64*1024*1024, throttle_bandwidth=self.balance_bandwidth)
-        #self.create_files(90, 64*1024*1024)
 
 
 def create_hdfs(env=None, number_of_datanodes=3, replica_number=3, enable_block_report=True, enable_heartbeats=True,
@@ -187,8 +187,8 @@ def main():
     args = parser.parse_args()
     print(args)
 
-    hdfs = create_hdfs(default_disk_speed=args.disk_speed, do_debug=True)
-    hdfs.run_until(100)
+    hdfs = create_hdfs(number_of_datanodes=10, default_disk_speed=args.disk_speed, do_debug=True)
+    hdfs.create_files(4, 64*1024*1024)
 
 
 if __name__ == '__main__':

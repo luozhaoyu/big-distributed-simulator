@@ -28,7 +28,7 @@ class TestHDFS(unittest.TestCase):
 
     def test_write(self):
         the_hdfs = self.create_silent_hdfs(number_of_datanodes=11)
-        p = the_hdfs.process_put_file("hello.txt", 100*1024*1024)
+        p = the_hdfs.put_file("hello.txt", 100*1024*1024)
         the_hdfs.run_until(p)
 
     def test_limplock_create_30_64MB(self):

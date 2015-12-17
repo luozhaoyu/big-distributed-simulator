@@ -14,13 +14,22 @@ import simpy
 from simpy.events import AllOf
 
 
+def get_network_latency(latency, bandwidth, queue):
+    """Simulate a real world link latency"""
+    queue_count = len(queue)
+    buffered_size = sum([p['size'] for p in queue])
+    max_buffer_size = 9 * 1024 * 1024
+    return 0
+    return (0.5 + random.random()) * latency * (1 + buffered_size / max_buffer_size)
+
+
 class SimulatorException(Exception):
     pass
 
 
 def _debugprint(env, msg, do=True):
     if do:
-        print("[%8.2f] %s" % (env.now, msg))
+        print("[%8.3f] %s" % (env.now, msg))
 
 
 class BaseSim(object):
@@ -66,7 +75,9 @@ class Node(BaseSim):
 
         self.memory_controller = simpy.Resource(self.env, capacity=1)
         self.disk_buffer = simpy.Container(self.env, init=disk_buffer, capacity=disk_buffer)
-        self.bandwidth = simpy.Container(self.env, init=default_bandwidth, capacity=default_bandwidth)
+        #self.bandwidth = simpy.Container(self.env, init=default_bandwidth, capacity=default_bandwidth)
+        self.bandwidth = default_bandwidth
+        self.link = simpy.Resource(self.env, capacity=1)
         self.set_disk_speed(disk_speed)
 
         self.disk_events = {}
@@ -158,7 +169,7 @@ class Node(BaseSim):
                     if self.disk_buffer.level == 0:
                         self.disk_buffer_full.succeed()
                     written_bytes += writable_bytes
-                    self.debug("%s\twrote %4.2f KB\t%4.2f/%4.2f MB"
+                    self.debug("DISK_WROTE_ONCE:%s\t%4.2f KB: %4.2f/%4.2f MB"
                                % (event_id, writable_bytes/1024, written_bytes/1024/1024, total_bytes/1024/1024))
         self.info("DISK_WROTE:%s\t%4.2f MB"
                    % (event_id, written_bytes/1024/1024))
@@ -241,7 +252,33 @@ class Switch(BaseSim):
         self.heartbeats = {}
  
     def add_node(self, node):
-        self.network[node.id] = node
+        self.network[node.id] = {
+            "node": node,
+            "queue": [],
+            "active": self.env.event(),
+        }
+        self.serve_link(node.id)
+
+    def serve_link(self, node_id):
+        self.env.process(self._serve_link(node_id))
+
+    def _serve_link(self, node_id):
+        the_bandwidth = self.network[node_id]["node"].bandwidth
+        self.info("Start serving link between %s and %s: %4.2f MB/s" % (self.id, node_id, float(the_bandwidth)/1024/1024))
+        while True:
+            # wating event succeed, which indicates there is event coming
+            yield self.network[node_id]["active"]
+            while self.network[node_id]["queue"]:
+                packet_event = self.network[node_id]["queue"].pop(0)
+                if packet_event['throttle_bandwidth'] > 0:
+                    the_bandwidth = min(the_bandwidth, packet_event['throttle_bandwidth'])
+                the_latency = get_network_latency(self.latency, the_bandwidth, self.network[node_id]["queue"]) + float(packet_event['size'])/the_bandwidth
+                yield self.env.timeout(the_latency)
+                self.debug("%s->%s: %i KB %4.2f MB/s %ims" %
+                           (packet_event['from'], node_id, float(packet_event['size']) / 1024, float(the_bandwidth) / 1024 / 1024, the_latency * 1000))
+                packet_event['event'].succeed()
+            # queue is empty, let me reset the event
+            self.network[node_id]["active"] = self.env.event()
 
     def process_ping(self, from_node_id, to_node_id, packet_size, throttle_bandwidth=-1):
         return self.env.process(self._ping(from_node_id, to_node_id, packet_size, delay=0, throttle_bandwidth=throttle_bandwidth))
@@ -266,31 +303,20 @@ class Switch(BaseSim):
         if delay > 0:
             yield self.env.timeout(delay)
 
-        sent_size = 0
-        while sent_size < packet_size:
-            require_bandwidth = int(min(self.network[from_node_id].bandwidth.level, self.network[to_node_id].bandwidth.level))
-            if throttle_bandwidth >= 0:
-                require_bandwidth = min(require_bandwidth, throttle_bandwidth)
-
-            if require_bandwidth > 0:
-                yield self.network[from_node_id].bandwidth.get(require_bandwidth) & self.network[to_node_id].bandwidth.get(require_bandwidth)
-                yield self.env.timeout(self.latency)
-                need_time = float(packet_size-sent_size) / require_bandwidth
-                # TODO: may be interrupted here
-                yield self.env.timeout(need_time)
-                yield self.env.timeout(self.latency)
-                self.debug("%s->%s:%4.0f/%4.0f KB\ttime=%4.2fms" %
-                           (from_node_id, to_node_id, float(packet_size-sent_size) / 1024, float(packet_size) / 1024, need_time * 1000))
-
-                yield self.network[from_node_id].bandwidth.put(require_bandwidth) & self.network[to_node_id].bandwidth.put(require_bandwidth)
-
-                sent_size += need_time * require_bandwidth
-            else:
-                sleep_time = random.random()
-                self.debug("%s->%s bandwidth <= 0, throttle_bandwidth: %i, sleep %4.2fs" %
-                           (from_node_id, to_node_id, throttle_bandwidth, sleep_time))
-                yield self.env.timeout(sleep_time)
-
+        packet_event = {
+            "event": self.env.event(),
+            "to": to_node_id,
+            "from": from_node_id,
+            "size": packet_size,
+            "throttle_bandwidth": throttle_bandwidth,
+        }
+        self.network[to_node_id]['queue'].append(packet_event)
+        if not self.network[to_node_id]['active'].triggered:
+            #self.warning("%s's traffic is no longer idle" % to_node_id)
+            self.network[to_node_id]['active'].succeed()
+        # wating for myself to complete
+        yield packet_event["event"]
+            
 
 class NameNode(Node):
     def __init__(self, env, node_id, hdfs=None, **kwargs):
