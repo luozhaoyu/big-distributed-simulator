@@ -29,7 +29,7 @@ class HDFS(node.BaseSim):
         self.env = env
         self.id = "HDFS"
 
-        self.pipeline_packet_size = 1024 * 1024
+        self.pipeline_packet_size = 256 * 1024
         self.replica_number = replica_number
         self.enable_datanode_cache = enable_datanode_cache
         self.enable_heartbeats = enable_heartbeats
@@ -115,15 +115,19 @@ class HDFS(node.BaseSim):
             i += 1
         self.info("REPLICATED\t%s\tin %s" % (file_name, node_sequence))
 
-    def put_file(self, file_name, size, throttle_bandwidth=-1):
-        return self.env.process(self._put_file(file_name, size, throttle_bandwidth))
+    def put_file(self, file_name, size, submitter=None, throttle_bandwidth=-1):
+        return self.env.process(self._put_file(file_name, size, submitter, throttle_bandwidth))
 
-    def _put_file(self, file_name, size, throttle_bandwidth=-1):
+    def _put_file(self, file_name, size, submitter=None, throttle_bandwidth=-1):
         """big file would be splitted into packtes <= 64KB"""
         # ask namenode for available datanodes
         yield self.env.timeout(self.switch.latency)
-        datanode_names = self.namenode.find_datanodes_for_new_file(file_name, size, self.replica_number)
-        datanode_names.insert(0, self.client.id)
+
+        if submitter:
+            datanode_names = self.namenode.find_datanodes_for_new_file(file_name, size, self.replica_number)
+            datanode_names.insert(0, submitter)
+        else:
+            datanode_names = self.namenode.find_datanodes_for_new_file(file_name, size, self.replica_number + 1)
 
         # pipeline writing (divide into packets) to all datanodes
         sent_file_size = 0
@@ -138,14 +142,15 @@ class HDFS(node.BaseSim):
 
         # wait for all ACKs
         yield AllOf(self.env, pipeline_events)
-        datanode_names.remove(self.client.id)
+        if self.client.id in datanode_names:
+            datanode_names.remove(self.client.id)
         self.namenode.register_file(file_name, datanode_names)
         self.critical("ALL ACKs collected, put_file %s finished" % (file_name))
 
-    def create_files(self, num, size, throttle_bandwidth=-1):
+    def create_files(self, num, size, submitter=None, throttle_bandwidth=-1):
         events = []
         for i in range(num):
-            e = self.put_file("hello.%i.txt" % i, size, throttle_bandwidth)
+            e = self.put_file("hello.%i.txt" % i, size, submitter, throttle_bandwidth)
             events.append(e)
         run_all = AllOf(self.env, events)
         self.run_until(run_all)
@@ -153,7 +158,7 @@ class HDFS(node.BaseSim):
 
     def limplock_create_30_files(self):
         """create 30 64-MB files"""
-        self.create_files(30, 64*1024*1024)
+        self.create_files(30, 64*1024*1024, submitter=self.client.id)
 
     def limplock_regenerate_90_blocks(self):
         """regenerate 90 blocks"""
@@ -187,8 +192,8 @@ def main():
     args = parser.parse_args()
     print(args)
 
-    hdfs = create_hdfs(number_of_datanodes=10, default_disk_speed=args.disk_speed, do_debug=True)
-    hdfs.create_files(4, 64*1024*1024)
+    hdfs = create_hdfs(number_of_datanodes=40, default_disk_speed=args.disk_speed, do_debug=False, do_info=False)
+    hdfs.limplock_regenerate_90_blocks()
 
 
 if __name__ == '__main__':

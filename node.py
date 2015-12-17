@@ -269,14 +269,18 @@ class Switch(BaseSim):
             # wating event succeed, which indicates there is event coming
             yield self.network[node_id]["active"]
             while self.network[node_id]["queue"]:
-                packet_event = self.network[node_id]["queue"].pop(0)
-                if packet_event['throttle_bandwidth'] > 0:
-                    the_bandwidth = min(the_bandwidth, packet_event['throttle_bandwidth'])
-                the_latency = get_network_latency(self.latency, the_bandwidth, self.network[node_id]["queue"]) + float(packet_event['size'])/the_bandwidth
-                yield self.env.timeout(the_latency)
-                self.debug("%s->%s: %i KB %4.2f MB/s %ims" %
-                           (packet_event['from'], node_id, float(packet_event['size']) / 1024, float(the_bandwidth) / 1024 / 1024, the_latency * 1000))
-                packet_event['event'].succeed()
+                with self.network[node_id]["node"].link.request() as req:
+                    yield req
+
+                    packet_event = self.network[node_id]["queue"].pop(0)
+                    if packet_event['throttle_bandwidth'] > 0:
+                        the_bandwidth = min(the_bandwidth, packet_event['throttle_bandwidth'])
+                    the_latency = get_network_latency(self.latency, the_bandwidth, self.network[node_id]["queue"])
+                    + float(packet_event['size'])/the_bandwidth
+                    yield self.env.timeout(the_latency)
+                    self.debug("DOWN:%s->%s: %i KB %4.2f MB/s %ims" %
+                               (packet_event['from'], node_id, float(packet_event['size']) / 1024, float(the_bandwidth) / 1024 / 1024, the_latency * 1000))
+                    packet_event['event'].succeed()
             # queue is empty, let me reset the event
             self.network[node_id]["active"] = self.env.event()
 
@@ -310,6 +314,19 @@ class Switch(BaseSim):
             "size": packet_size,
             "throttle_bandwidth": throttle_bandwidth,
         }
+        from_bandwidth = self.network[from_node_id]['node'].bandwidth
+        if throttle_bandwidth > 0:
+            from_bandwidth = min(from_bandwidth, throttle_bandwidth)
+        
+        req_from = self.network[from_node_id]['node'].link.request()
+        with req_from:
+            yield req_from
+            # put things to switch; consider the real bandwidth?
+            the_latency = float(packet_size) / from_bandwidth
+            yield self.env.timeout(the_latency)
+            self.debug("UP:%s->%s: %i KB %4.2f MB/s %ims" %
+                       (from_node_id, to_node_id, packet_size / 1024, float(from_bandwidth) / 1024 / 1024, the_latency * 1000))
+
         self.network[to_node_id]['queue'].append(packet_event)
         if not self.network[to_node_id]['active'].triggered:
             #self.warning("%s's traffic is no longer idle" % to_node_id)
