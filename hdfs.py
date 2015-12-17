@@ -192,9 +192,8 @@ def main():
     args = parser.parse_args()
     print(args)
 
-    hdfs = create_hdfs(number_of_datanodes=3, default_disk_speed=args.disk_speed, do_debug=True)
-    #hdfs.limplock_regenerate_90_blocks()
-    hdfs.limplock_create_30_files()
+    hdfs = create_hdfs(number_of_datanodes=1, default_disk_speed=args.disk_speed, do_debug=True)
+    hdfs.run_until(10)
 
 
 if __name__ == '__main__':

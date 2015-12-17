@@ -311,6 +311,7 @@ class Switch(BaseSim):
         #: CSMA/CD
         failed = 0
         while True:
+            self.debug("requesting from %s to %s" % (from_node_id, to_node_id))
             req_from = self.network[from_node_id]['node'].link.request()
             req_to = self.network[to_node_id]['node'].link.request()
             # prevent deadlock
@@ -376,7 +377,7 @@ class NameNode(Node):
         return self.metadata.get(file_name)
 
     def find_datanodes_for_new_file(self, file_name, size, replica_number):
-        return random.sample(self.datanodes.keys(), replica_number)
+        return random.sample(self.datanodes.keys(), min(replica_number, len(self.datanodes)))
 
     def register_file(self, file_name, datanode_names):
         self.metadata[file_name] = datanode_names
