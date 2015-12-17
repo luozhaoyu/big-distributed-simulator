@@ -19,7 +19,7 @@ def get_network_latency(latency, bandwidth, queue):
     queue_count = len(queue)
     buffered_size = sum([p['size'] for p in queue])
     max_buffer_size = 9 * 1024 * 1024
-    return 0
+    #return 0
     return (0.5 + random.random()) * latency * (1 + buffered_size / max_buffer_size)
 
 

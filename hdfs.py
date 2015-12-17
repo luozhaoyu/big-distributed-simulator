@@ -190,11 +190,13 @@ def main():
     parser = argparse.ArgumentParser(description='Process some integers.')
     parser.add_argument('--disk-speed', type=float, default=80*1024*1024, help='disk speed')
     parser.add_argument('--net-speed', type=float, default=100*1024*1024, help='net speed')
+    parser.add_argument('--nodes', type=int, default=40, help='nodes')
+    parser.add_argument('--replicas', type=int, default=3, help='replicas')
     args = parser.parse_args()
     print(args)
 
-    hdfs = create_hdfs(number_of_datanodes=39, default_disk_speed=args.disk_speed, do_debug=False, do_info=False)
-    hdfs.create_datanode("limpware-datanode", disk_speed=args.disk_speed*1024*1024, default_bandwidth=args.net_speed*1024*1024/8)
+    hdfs = create_hdfs(number_of_datanodes=args.nodes, replica_number=args.replicas, default_disk_speed=args.disk_speed, do_debug=False, do_info=False)
+    #hdfs.create_datanode("limpware-datanode", disk_speed=args.disk_speed*1024*1024, default_bandwidth=args.net_speed*1024*1024/8)
     #hdfs.limplock_regenerate_90_blocks()
     hdfs.limplock_create_30_files()
 
