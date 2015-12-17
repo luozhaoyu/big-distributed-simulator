@@ -257,7 +257,7 @@ class Switch(BaseSim):
             "queue": [],
             "active": self.env.event(),
         }
-        self.serve_link(node.id)
+        #self.serve_link(node.id)
 
     def serve_link(self, node_id):
         self.env.process(self._serve_link(node_id))
@@ -307,32 +307,58 @@ class Switch(BaseSim):
         if delay > 0:
             yield self.env.timeout(delay)
 
-        packet_event = {
-            "event": self.env.event(),
-            "to": to_node_id,
-            "from": from_node_id,
-            "size": packet_size,
-            "throttle_bandwidth": throttle_bandwidth,
-        }
-        from_bandwidth = self.network[from_node_id]['node'].bandwidth
-        if throttle_bandwidth > 0:
-            from_bandwidth = min(from_bandwidth, throttle_bandwidth)
-        
-        req_from = self.network[from_node_id]['node'].link.request()
-        with req_from:
-            yield req_from
-            # put things to switch; consider the real bandwidth?
-            the_latency = float(packet_size) / from_bandwidth
-            yield self.env.timeout(the_latency)
-            self.debug("UP:%s->%s: %i KB %4.2f MB/s %ims" %
-                       (from_node_id, to_node_id, packet_size / 1024, float(from_bandwidth) / 1024 / 1024, the_latency * 1000))
+        self.debug("ping begin")
+        #: CSMA/CD
+        failed = 0
+        while True:
+            req_from = self.network[from_node_id]['node'].link.request()
+            req_to = self.network[to_node_id]['node'].link.request()
+            # prevent deadlock
+            req_timeout = self.env.timeout(0.1)
+            yield req_timeout | (req_to & req_from)
+            if not req_to.processed: # try again
+                self.network[from_node_id]['node'].link.release(req_from)
+                self.network[to_node_id]['node'].link.release(req_to)
+                failed += 1
+                #: milliseconds to seconds
+                backoff = float(max(1, random.randint(0, 2**failed-1))) / 1000
+                self.debug("backoff %.3fs" % backoff)
+                yield self.env.timeout(backoff)
+            else:
+                the_bandwidth = min(max(throttle_bandwidth, 1), self.network[from_node_id]['node'].bandwidth, self.network[to_node_id]['node'].bandwidth)
+                the_latency = float(packet_size) / the_bandwidth
+                yield self.env.timeout(the_latency)
+                self.debug("%s->%s: %.3f KB" % (from_node_id, to_node_id, packet_size/1024))
+                self.network[from_node_id]['node'].link.release(req_from)
+                self.network[to_node_id]['node'].link.release(req_to)
+                return
 
-        self.network[to_node_id]['queue'].append(packet_event)
-        if not self.network[to_node_id]['active'].triggered:
-            #self.warning("%s's traffic is no longer idle" % to_node_id)
-            self.network[to_node_id]['active'].succeed()
-        # wating for myself to complete
-        yield packet_event["event"]
+#        packet_event = {
+#            "event": self.env.event(),
+#            "to": to_node_id,
+#            "from": from_node_id,
+#            "size": packet_size,
+#            "throttle_bandwidth": throttle_bandwidth,
+#        }
+#        from_bandwidth = self.network[from_node_id]['node'].bandwidth
+#        if throttle_bandwidth > 0:
+#            from_bandwidth = min(from_bandwidth, throttle_bandwidth)
+#        
+#        req_from = self.network[from_node_id]['node'].link.request()
+#        with req_from:
+#            yield req_from
+#            # put things to switch; consider the real bandwidth?
+#            the_latency = float(packet_size) / from_bandwidth
+#            yield self.env.timeout(the_latency)
+#            self.debug("UP:%s->%s: %i KB %4.2f MB/s %ims" %
+#                       (from_node_id, to_node_id, packet_size / 1024, float(from_bandwidth) / 1024 / 1024, the_latency * 1000))
+#
+#        self.network[to_node_id]['queue'].append(packet_event)
+#        if not self.network[to_node_id]['active'].triggered:
+#            #self.warning("%s's traffic is no longer idle" % to_node_id)
+#            self.network[to_node_id]['active'].succeed()
+#        # wating for myself to complete
+#        yield packet_event["event"]
             
 
 class NameNode(Node):

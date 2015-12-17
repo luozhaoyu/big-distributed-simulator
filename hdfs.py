@@ -21,7 +21,7 @@ class HDFS(node.BaseSim):
     The client machine would only be used to submit its task
     """
 
-    def __init__(self, env, namenode, replica_number=3, heartbeat_interval=3, heartbeat_size=16*1024,
+    def __init__(self, env, namenode, replica_number=3, heartbeat_interval=3, heartbeat_size=1024,
                  enable_datanode_cache=True, enable_heartbeats=True, enable_block_report=True,
                  block_report_interval=30, balance_bandwidth=1024*1024, **kwargs):
         super(HDFS, self).__init__(**kwargs)
@@ -29,7 +29,7 @@ class HDFS(node.BaseSim):
         self.env = env
         self.id = "HDFS"
 
-        self.pipeline_packet_size = 256 * 1024
+        self.pipeline_packet_size = 2560 * 1024
         self.replica_number = replica_number
         self.enable_datanode_cache = enable_datanode_cache
         self.enable_heartbeats = enable_heartbeats
@@ -192,8 +192,9 @@ def main():
     args = parser.parse_args()
     print(args)
 
-    hdfs = create_hdfs(number_of_datanodes=40, default_disk_speed=args.disk_speed, do_debug=False, do_info=False)
-    hdfs.limplock_regenerate_90_blocks()
+    hdfs = create_hdfs(number_of_datanodes=3, default_disk_speed=args.disk_speed, do_debug=True)
+    #hdfs.limplock_regenerate_90_blocks()
+    hdfs.limplock_create_30_files()
 
 
 if __name__ == '__main__':
