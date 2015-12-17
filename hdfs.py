@@ -188,12 +188,15 @@ def main():
     """Main function only in command line"""
     from sys import argv
     parser = argparse.ArgumentParser(description='Process some integers.')
-    parser.add_argument('--disk-speed', type=int, default=80*1024*1024, help='disk speed')
+    parser.add_argument('--disk-speed', type=float, default=80*1024*1024, help='disk speed')
+    parser.add_argument('--net-speed', type=float, default=100*1024*1024, help='net speed')
     args = parser.parse_args()
     print(args)
 
-    hdfs = create_hdfs(number_of_datanodes=40, default_disk_speed=args.disk_speed, do_debug=False, do_info=False)
-    hdfs.limplock_regenerate_90_blocks()
+    hdfs = create_hdfs(number_of_datanodes=39, default_disk_speed=args.disk_speed, do_debug=False, do_info=False)
+    hdfs.create_datanode("limpware-datanode", disk_speed=args.disk_speed*1024*1024, default_bandwidth=args.net_speed*1024*1024/8)
+    #hdfs.limplock_regenerate_90_blocks()
+    hdfs.limplock_create_30_files()
 
 
 if __name__ == '__main__':
