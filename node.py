@@ -24,26 +24,35 @@ def _debugprint(env, msg, do=True):
 
 
 class BaseSim(object):
+    def __init__(self, do_info=True, do_warning=True, do_debug=False, do_critical=True):
+        self.do_info = do_info
+        self.do_warning = do_warning
+        self.do_debug = do_debug
+        self.do_critical = do_critical
+
     def info(self, msg):
         msg = "INFO\tid:%s\t%s" % (self.id, msg)
-        _debugprint(self.env, msg)
+        _debugprint(self.env, msg, self.do_info)
 
     def warning(self, msg):
         msg = "WARN\tid:%s\t%s" % (self.id, msg)
-        _debugprint(self.env, msg)
+        _debugprint(self.env, msg, self.do_warning)
 
     def debug(self, msg):
         msg = "DEBUG\tid:%s\t%s" % (self.id, msg)
-        _debugprint(self.env, msg, do=True)
+        _debugprint(self.env, msg, self.do_debug)
 
     def critical(self, msg):
         msg = "CRITICAL\tid:%s\t%s" % (self.id, msg)
-        _debugprint(self.env, msg, do=True)
+        _debugprint(self.env, msg, self.do_critical)
 
 
 class Node(BaseSim):
-    def __init__(self, env, node_id, ip="127.0.0.1", cpu_cores=4, memory=8*1024*1024*1024, disk=320*1024*1024*1024, disk_speed=80*1024*1024, default_bandwidth=100*1024*1024/8, disk_buffer=512*1024*1024):
+    def __init__(self, env, node_id, ip="127.0.0.1", cpu_cores=4, memory=8*1024*1024*1024, disk=320*1024*1024*1024,
+                 disk_speed=80*1024*1024, default_bandwidth=100*1024*1024/8, disk_buffer=512*1024*1024, **kwargs):
         "One node is a resouce entity"
+        super(Node, self).__init__(**kwargs)
+
         self.env = env
         self.id = node_id
 
@@ -136,7 +145,7 @@ class Node(BaseSim):
                 yield req
                 if self.disk_buffer.level == 0: # if buffer is full
                     sleep_time = random.random()
-                    self.debug("%s\tdisk_buffer_full, will sleep %4.2f\t%4.2f/%4.2f MB"
+                    self.debug("BUFFER_FULL:%s sleep %4.2f\t%4.2f/%4.2f MB"
                                % (event_id, sleep_time, written_bytes/1024/1024, total_bytes/1024/1024))
                     yield self.env.timeout(sleep_time)
                 else: # if buffer has space to write
@@ -151,7 +160,7 @@ class Node(BaseSim):
                     written_bytes += writable_bytes
                     self.debug("%s\twrote %4.2f KB\t%4.2f/%4.2f MB"
                                % (event_id, writable_bytes/1024, written_bytes/1024/1024, total_bytes/1024/1024))
-        self.info("%s\tFINISHED\t%4.2f MB"
+        self.info("DISK_WROTE:%s\t%4.2f MB"
                    % (event_id, written_bytes/1024/1024))
 
     def _write_disk(self, total_bytes, event_id, delay=0):
@@ -219,7 +228,9 @@ class Node(BaseSim):
 
 
 class Switch(BaseSim):
-    def __init__(self, env, switch_id="switch", default_bandwidth=100*1024*1024/8, latency=0.001):
+    def __init__(self, env, switch_id="switch", default_bandwidth=100*1024*1024/8, latency=0.001, **kwargs):
+        super(Switch, self).__init__(**kwargs)
+
         self.env = env
         self.bandwidth = default_bandwidth
         self.network = {}
@@ -232,8 +243,8 @@ class Switch(BaseSim):
     def add_node(self, node):
         self.network[node.id] = node
 
-    def process_ping(self, from_node_id, to_node_id, packet_size):
-        return self.env.process(self._ping(from_node_id, to_node_id, packet_size))
+    def process_ping(self, from_node_id, to_node_id, packet_size, throttle_bandwidth=-1):
+        return self.env.process(self._ping(from_node_id, to_node_id, packet_size, delay=0, throttle_bandwidth=throttle_bandwidth))
 
     def stop_heartbeat(self, from_node_id, to_node_id):
         self.heartbeats.pop(from_node_id, to_node_id)
@@ -250,7 +261,7 @@ class Switch(BaseSim):
             yield self.env.timeout(current_interval)
         self.info("start heartbeat from %s to %s every %ss" % (from_node_id, to_node_id, current_interval))
 
-    def _ping(self, from_node_id, to_node_id, packet_size=16*1024, delay=0):
+    def _ping(self, from_node_id, to_node_id, packet_size=16*1024, delay=0, throttle_bandwidth=-1):
         """TODO: need to implement slow start"""
         if delay > 0:
             yield self.env.timeout(delay)
@@ -258,6 +269,9 @@ class Switch(BaseSim):
         sent_size = 0
         while sent_size < packet_size:
             require_bandwidth = int(min(self.network[from_node_id].bandwidth.level, self.network[to_node_id].bandwidth.level))
+            if throttle_bandwidth >= 0:
+                require_bandwidth = min(require_bandwidth, throttle_bandwidth)
+
             if require_bandwidth > 0:
                 yield self.network[from_node_id].bandwidth.get(require_bandwidth) & self.network[to_node_id].bandwidth.get(require_bandwidth)
                 yield self.env.timeout(self.latency)
@@ -273,13 +287,14 @@ class Switch(BaseSim):
                 sent_size += need_time * require_bandwidth
             else:
                 sleep_time = random.random()
-                self.debug("%s->%s bandwidth is not enough, sleep %4.2fs" % (from_node_id, to_node_id, sleep_time))
+                self.debug("%s->%s bandwidth <= 0, throttle_bandwidth: %i, sleep %4.2fs" %
+                           (from_node_id, to_node_id, throttle_bandwidth, sleep_time))
                 yield self.env.timeout(sleep_time)
 
 
 class NameNode(Node):
-    def __init__(self, env, node_id, hdfs=None):
-        super(NameNode, self).__init__(env, node_id)
+    def __init__(self, env, node_id, hdfs=None, **kwargs):
+        super(NameNode, self).__init__(env, node_id, **kwargs)
         #: store files' placement
         self.metadata = {}
         self.datanodes = {}
