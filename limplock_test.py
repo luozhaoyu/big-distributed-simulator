@@ -14,7 +14,7 @@ import unittest
 import hdfs
 
 
-class TestHDFS(unittest.TestCase):
+class TestLimp(unittest.TestCase):
 
     def test_limplock_create_30_64MB(self):
         the_hdfs = hdfs.create_silent_hdfs(number_of_datanodes=40)
