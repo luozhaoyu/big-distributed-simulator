@@ -18,7 +18,6 @@ import hdfs
 
 class TestReport(unittest.TestCase):
 
-    @unittest.skip("")
     def test_regenerate_block(self):
         the_hdfs = hdfs.create_silent_hdfs(number_of_datanodes=20)
         print("RegerateBlocks20Datanodes\tExpectationTime\tExecutionTime")
@@ -32,7 +31,6 @@ class TestReport(unittest.TestCase):
             print("%i\t%.1f\t%.3f" % (i, t-prev, end - start))
             prev = t
 
-    @unittest.skip("")
     def test_create_files(self):
         the_hdfs = hdfs.create_silent_hdfs(number_of_datanodes=20)
         print("CreateFiles20Datanodes\tExpectationTime\tExecutionTime")
@@ -66,7 +64,6 @@ class TestReport(unittest.TestCase):
             end = time.time()
             print("%i\t%.1f\t%.3f" % (i, t, end - start))
 
-    @unittest.skip("")
     def test_heartbeats(self):
         print("HeartbeatInteval\tHeartbeatSize\tExpectationTimeRegerate30\tExecutionTime")
         the_hdfs = hdfs.create_silent_hdfs(number_of_datanodes=20)
@@ -85,7 +82,6 @@ class TestReport(unittest.TestCase):
         end = time.time()
         print("%i\t%i\t%.1f\t%.3f" % (0, 0, t, end - start))
 
-    @unittest.skip("")
     def test_client_write_packet_size(self):
         print("ClientWritePacket\tExpectationTimeRegerate30\tExecutionTime")
         the_hdfs = hdfs.create_silent_hdfs(number_of_datanodes=20)
@@ -99,7 +95,6 @@ class TestReport(unittest.TestCase):
         end = time.time()
         print("%i\t%.1f\t%.3f" % (256*1024, t, end - start))
 
-    @unittest.skip("")
     def test_enable_datanode_cache(self):
         print("EnableDatanodeCache\tExpectationTimeRegerate30\tExecutionTime")
         the_hdfs = hdfs.create_silent_hdfs(number_of_datanodes=20)
