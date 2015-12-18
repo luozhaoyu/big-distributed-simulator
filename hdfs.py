@@ -209,16 +209,18 @@ def main():
     from sys import argv
     parser = argparse.ArgumentParser(description='Process some integers.')
     parser.add_argument('--disk-speed', type=int, default=80*1024*1024, help='disk speed')
-    parser.add_argument('--nodes', type=int, default=3, help='disk speed')
+    parser.add_argument('--nodes', type=int, default=20, help='number of datanodes')
+    parser.add_argument('--files', type=int, default=30, help='number of generate files')
     args = parser.parse_args()
     print(args)
 
     hdfs = create_hdfs(number_of_datanodes=args.nodes, default_disk_speed=args.disk_speed,
-                       do_debug=False,
+                       do_debug=True,
                        )
-    #hdfs.run_until(1000)
-    print(hdfs.limplock_create_30_files())
-    #print(hdfs.limplock_regenerate_90_blocks())
+    if True:
+        hdfs.put_files(args.files, 64*1024*1024)
+    else:
+        hdfs.regenerate_blocks(args.files)
 
 
 if __name__ == '__main__':

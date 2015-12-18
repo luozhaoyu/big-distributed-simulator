@@ -18,6 +18,7 @@ import hdfs
 
 class TestReport(unittest.TestCase):
 
+    @unittest.skip("too slow")
     def test_regenerate_block(self):
         the_hdfs = hdfs.create_silent_hdfs(number_of_datanodes=20)
         print("RegerateBlocks20Datanodes\tExpectationTime\tExecutionTime")
@@ -31,6 +32,7 @@ class TestReport(unittest.TestCase):
             print("%i\t%.1f\t%.3f" % (i, t-prev, end - start))
             prev = t
 
+    @unittest.skip("too slow")
     def test_create_files(self):
         the_hdfs = hdfs.create_silent_hdfs(number_of_datanodes=20)
         print("CreateFiles20Datanodes\tExpectationTime\tExecutionTime")
@@ -44,9 +46,10 @@ class TestReport(unittest.TestCase):
             print("%i\t%.1f\t%.3f" % (i, t-prev, end - start))
             prev = t
 
+    @unittest.skip("too slow")
     def test_number_of_datanodes(self):
         print("NumberOfDatanodes\tExpectationTimeRegerate30\tExecutionTime")
-        l = [5, 10, 20, 40, 80, 100, 1000, 3000]
+        l = [5, 10, 20, 40, 80, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
         for i in l:
             the_hdfs = hdfs.create_silent_hdfs(number_of_datanodes=i)
             start = time.time()
@@ -56,11 +59,11 @@ class TestReport(unittest.TestCase):
 
     def test_replica_number(self):
         print("ReplicaNumber\tExpectationTimeRegerate30\tExecutionTime")
-        l = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        l = range(10)
         for i in l:
             the_hdfs = hdfs.create_silent_hdfs(number_of_datanodes=20, replica_number=i)
             start = time.time()
-            t = the_hdfs.regenerate_blocks(30)
+            t = the_hdfs.put_files(30, 64*1024*1024)
             end = time.time()
             print("%i\t%.1f\t%.3f" % (i, t, end - start))
 
@@ -75,7 +78,7 @@ class TestReport(unittest.TestCase):
         start = time.time()
         t = the_hdfs.regenerate_blocks(30)
         end = time.time()
-        print("%i\t%i\t%.1f\t%.3f" % (1, 1024*1024, t, end - start))
+        print("%i\t%i\t%.1f\t%.3f" % (30, 32*1024*1024, t, end - start))
         the_hdfs = hdfs.create_silent_hdfs(number_of_datanodes=20, enable_heartbeats=False, enable_block_report=False)
         start = time.time()
         t = the_hdfs.regenerate_blocks(30)

@@ -11,5 +11,5 @@ report:
 
 debug:
 	rm -f network
-	python hdfs.py | grep NETWORK > network
+	python hdfs.py --nodes=20 | grep NETWORK > network
 	vim network
