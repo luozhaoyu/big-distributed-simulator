@@ -84,7 +84,8 @@ class Node(BaseSim):
         self.disk_buffer = simpy.Container(self.env, init=disk_buffer, capacity=disk_buffer)
         #self.bandwidth = simpy.Container(self.env, init=default_bandwidth, capacity=default_bandwidth)
         self.bandwidth = default_bandwidth
-        self.link = simpy.Resource(self.env, capacity=1)
+        #self.link = simpy.Resource(self.env, capacity=1)
+        self.link = simpy.PriorityResource(self.env, capacity=1)
         self.set_disk_speed(disk_speed)
 
         self.disk_events = {}
@@ -150,7 +151,7 @@ class Node(BaseSim):
                 flush_time = float(buffered_bytes) / self.disk_speed.capacity
                 yield self.env.timeout(flush_time)
                 yield self.disk_buffer.put(buffered_bytes)
-                self.info("DISK_FLUSH_COMPLETE\t%4.2f" % (flush_time))
+                self.info("DISK_FLUSH_COMPLETE\t%4.2fs" % (flush_time))
             self.disk_buffer_full = self.env.event()
 
     def _write_disk_buffer(self, total_bytes, event_id, delay=0):
@@ -314,11 +315,10 @@ class Switch(BaseSim):
         """TODO: need to implement slow start"""
         if delay > 0:
             yield self.env.timeout(delay)
+        yield self.env.timeout(random.random()/100)
 
-        req_from = self.network[from_node_id]['node'].link.request()
-        req_to = self.network[to_node_id]['node'].link.request()
-        #self.debug("BEGIN: req_from: %s req_to: %s" % (req_from.processed, req_to.processed))
-        #self.debug("BEGIN2: req_from: %s req_to: %s" % (req_from.processed, req_to.processed))
+        req_from = self.network[from_node_id]['node'].link.request(random.randint(0, 0))
+        req_to = self.network[to_node_id]['node'].link.request(random.randint(0, 0))
         #: CSMA/CD
         failed = 0
         while True:
@@ -328,11 +328,15 @@ class Switch(BaseSim):
             #yield req_timeout | (req_to & req_from)
             #self.debug("req_from: %s req_to: %s req_timeout: %s" % (req_from.processed, req_to.processed, req_timeout.processed))
             #yield (req_from & req_to) | req_timeout
+            self.debug("BEFORE_YIELD\t%s:%s->%s:%s: req_from:%s req_to:%s" %
+                        (from_node_id, len(self.network[from_node_id]['node'].link.queue),
+                            to_node_id, len(self.network[to_node_id]['node'].link.queue),
+                            req_from.processed, req_to.processed))
             yield (req_from & req_to)
-#            self.debug("requesting from %s to %s: %iB\tfrom_count: %s\tto_count: %s\nreq_from:%s req_to: %s req_timeout: %s"
-#                       % (from_node_id, to_node_id, packet_size,
-#                          self.network[from_node_id]['node'].link.count, self.network[to_node_id]['node'].link.count,
-#                          req_from.processed, req_to.processed, req_timeout.processed))
+            self.debug("AFTER_YIELD\t%s:%s->%s:%s: req_from:%s req_to:%s" %
+                        (from_node_id, len(self.network[from_node_id]['node'].link.queue),
+                            to_node_id, len(self.network[to_node_id]['node'].link.queue),
+                            req_from.processed, req_to.processed))
             if req_timeout.processed: # try again
                 failed += 1
                 if failed > 6000:
@@ -375,37 +379,6 @@ class Switch(BaseSim):
                 break
         self.network[from_node_id]['node'].link.release(req_from)
         self.network[to_node_id]['node'].link.release(req_to)
-        self.debug("LAST:%s:%s->%s:%s" %
-                    (from_node_id, len(self.network[from_node_id]['node'].link.queue),
-                        to_node_id, len(self.network[to_node_id]['node'].link.queue)))
-#        self.debug("%s->%s: %.3f KB in %4.2fms" % (from_node_id, to_node_id, packet_size/1024, the_latency*1000))
-
-#        packet_event = {
-#            "event": self.env.event(),
-#            "to": to_node_id,
-#            "from": from_node_id,
-#            "size": packet_size,
-#            "throttle_bandwidth": throttle_bandwidth,
-#        }
-#        from_bandwidth = self.network[from_node_id]['node'].bandwidth
-#        if throttle_bandwidth > 0:
-#            from_bandwidth = min(from_bandwidth, throttle_bandwidth)
-#        
-#        req_from = self.network[from_node_id]['node'].link.request()
-#        with req_from:
-#            yield req_from
-#            # put things to switch; consider the real bandwidth?
-#            the_latency = float(packet_size) / from_bandwidth
-#            yield self.env.timeout(the_latency)
-#            self.debug("UP:%s->%s: %i KB %4.2f MB/s %ims" %
-#                       (from_node_id, to_node_id, packet_size / 1024, float(from_bandwidth) / 1024 / 1024, the_latency * 1000))
-#
-#        self.network[to_node_id]['queue'].append(packet_event)
-#        if not self.network[to_node_id]['active'].triggered:
-#            #self.warning("%s's traffic is no longer idle" % to_node_id)
-#            self.network[to_node_id]['active'].succeed()
-#        # wating for myself to complete
-#        yield packet_event["event"]
             
 
 class NameNode(Node):

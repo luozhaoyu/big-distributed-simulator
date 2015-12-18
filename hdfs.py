@@ -24,13 +24,14 @@ class HDFS(node.BaseSim):
 
     def __init__(self, env, namenode, replica_number=3, heartbeat_interval=3, heartbeat_size=1024,
                  enable_datanode_cache=True, enable_heartbeats=True, enable_block_report=True,
-                 block_report_interval=30, balance_bandwidth=1024*1024, **kwargs):
+                 block_report_interval=30, balance_bandwidth=1024*1024, client_write_packet_size=1024*1024,
+                 **kwargs):
         super(HDFS, self).__init__(**kwargs)
 
         self.env = env
         self.id = "HDFS"
 
-        self.pipeline_packet_size = 1024 * 1024
+        self.client_write_packet_size = client_write_packet_size
         self.block_size = 64 * 1024 * 1024
         self.replica_number = replica_number
         self.enable_datanode_cache = enable_datanode_cache
@@ -123,16 +124,12 @@ class HDFS(node.BaseSim):
 
     def _create_file(self, file_name, size, node_sequence, throttle_bandwidth=-1):
         """big file would be splitted into packtes <= 64KB"""
-        # ask namenode for available datanodes
-        yield self.env.timeout(self.switch.latency)
-
-
         # pipeline writing (divide into packets) to all datanodes
         sent_file_size = 0
         pipeline_events = []
         i = 1
         while sent_file_size < size:
-            sending_size = min(self.pipeline_packet_size, size - sent_file_size)
+            sending_size = min(self.client_write_packet_size, size - sent_file_size)
             p = self.replicate_file("%s.%i" % (file_name, i), sending_size, node_sequence, throttle_bandwidth)
             pipeline_events.append(p)
             sent_file_size += sending_size
@@ -157,6 +154,7 @@ class HDFS(node.BaseSim):
         run_all = AllOf(self.env, events)
         self.run_until(run_all)
         self.critical("%i files stored in NameNode" % len(self.namenode.metadata))
+        return self.env.now
 
     def regenerate_blocks(self, num):
         """TODO: it is justly randomly regenerate blocks, not according to block placement and its replica number"""
@@ -169,26 +167,30 @@ class HDFS(node.BaseSim):
             regenerate_events.append(r)
         run_all = AllOf(self.env, regenerate_events)
         self.run_until(run_all)
+        return self.env.now
 
     def limplock_create_30_files(self):
         """create 30 64-MB files"""
         self.put_files(30, self.block_size)
+        return self.env.now
 
     def limplock_regenerate_90_blocks(self):
         """regenerate 90 blocks"""
         self.info("regenerating 90 blocks: throttle_bandwidth: %s" % self.balance_bandwidth)
         self.regenerate_blocks(90)
+        return self.env.now
 
 
-def create_hdfs(env=None, number_of_datanodes=3, replica_number=3, enable_block_report=True, enable_heartbeats=True,
+def create_hdfs(env=None, number_of_datanodes=3, replica_number=3,
+                enable_block_report=True, enable_heartbeats=True, enable_datanode_cache=True,
                 default_bandwidth=100*1024*1024/8, default_disk_speed=80*1024*1024, heartbeat_interval=3,
-                heartbeat_size=16*1024, block_report_interval=30, **kwargs):
+                heartbeat_size=16*1024, block_report_interval=30, client_write_packet_size=1024*1024, **kwargs):
     if not env:
         env = simpy.Environment()
     hdfs = HDFS(env, namenode=None, replica_number=replica_number,
                           enable_block_report=enable_block_report, enable_heartbeats=enable_heartbeats,
                           heartbeat_interval=heartbeat_interval, heartbeat_size=heartbeat_size,
-                          block_report_interval=block_report_interval, **kwargs)
+                          block_report_interval=block_report_interval, client_write_packet_size=client_write_packet_size, **kwargs)
     namenode = node.NameNode(env, "namenode", hdfs, **kwargs)
     hdfs.set_namenode(namenode)
 
@@ -199,7 +201,7 @@ def create_hdfs(env=None, number_of_datanodes=3, replica_number=3, enable_block_
 
 
 def create_silent_hdfs(**kwargs):
-    return create_hdfs(do_debug=False, do_info=False, do_warning=True, do_critical=True, **kwargs)
+    return create_hdfs(do_debug=False, do_info=False, do_warning=False, do_critical=False, **kwargs)
 
 
 def main():
@@ -207,16 +209,16 @@ def main():
     from sys import argv
     parser = argparse.ArgumentParser(description='Process some integers.')
     parser.add_argument('--disk-speed', type=int, default=80*1024*1024, help='disk speed')
+    parser.add_argument('--nodes', type=int, default=3, help='disk speed')
     args = parser.parse_args()
     print(args)
 
-    hdfs = create_hdfs(number_of_datanodes=20, default_disk_speed=args.disk_speed, do_debug=True,
-                       do_warning=True,
-                       #enable_heartbeats=False, enable_block_report=False
+    hdfs = create_hdfs(number_of_datanodes=args.nodes, default_disk_speed=args.disk_speed,
+                       do_debug=False,
                        )
-    #hdfs.limplock_create_30_files()
-    #hdfs.limplock_regenerate_90_blocks()
-    hdfs.put_files(1, 100*1024*1024)
+    #hdfs.run_until(1000)
+    print(hdfs.limplock_create_30_files())
+    #print(hdfs.limplock_regenerate_90_blocks())
 
 
 if __name__ == '__main__':
