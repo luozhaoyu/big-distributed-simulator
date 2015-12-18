@@ -23,6 +23,13 @@ def get_network_latency(latency, bandwidth, queue):
     return (0.5 + random.random()) * latency * (1 + buffered_size / max_buffer_size)
 
 
+def get_backoff(backoff_level):
+    backoff = float(max(1, random.randint(0, int(min(5*1000, # backoff wait <= 5s
+                                                    2**min(30, backoff_level)-1))))) / 1000
+    return random.random() / 10
+    return backoff
+
+
 class SimulatorException(Exception):
     pass
 
@@ -254,6 +261,7 @@ class Switch(BaseSim):
     def add_node(self, node):
         self.network[node.id] = {
             "node": node,
+            "backoff_level": 0,
             "queue": [],
             "active": self.env.event(),
         }
@@ -307,32 +315,70 @@ class Switch(BaseSim):
         if delay > 0:
             yield self.env.timeout(delay)
 
-        self.debug("ping begin")
+        req_from = self.network[from_node_id]['node'].link.request()
+        req_to = self.network[to_node_id]['node'].link.request()
+        #self.debug("BEGIN: req_from: %s req_to: %s" % (req_from.processed, req_to.processed))
+        #self.debug("BEGIN2: req_from: %s req_to: %s" % (req_from.processed, req_to.processed))
         #: CSMA/CD
         failed = 0
         while True:
-            self.debug("requesting from %s to %s" % (from_node_id, to_node_id))
-            req_from = self.network[from_node_id]['node'].link.request()
-            req_to = self.network[to_node_id]['node'].link.request()
             # prevent deadlock
-            req_timeout = self.env.timeout(0.1)
-            yield req_timeout | (req_to & req_from)
-            if not req_to.processed: # try again
-                self.network[from_node_id]['node'].link.release(req_from)
-                self.network[to_node_id]['node'].link.release(req_to)
+            req_timeout = self.env.timeout(600)
+            req_timeout = self.env.event()
+            #yield req_timeout | (req_to & req_from)
+            #self.debug("req_from: %s req_to: %s req_timeout: %s" % (req_from.processed, req_to.processed, req_timeout.processed))
+            #yield (req_from & req_to) | req_timeout
+            yield (req_from & req_to)
+#            self.debug("requesting from %s to %s: %iB\tfrom_count: %s\tto_count: %s\nreq_from:%s req_to: %s req_timeout: %s"
+#                       % (from_node_id, to_node_id, packet_size,
+#                          self.network[from_node_id]['node'].link.count, self.network[to_node_id]['node'].link.count,
+#                          req_from.processed, req_to.processed, req_timeout.processed))
+            if req_timeout.processed: # try again
                 failed += 1
+                if failed > 6000:
+                    self.network[from_node_id]['node'].link.release(req_from)
+                    self.network[to_node_id]['node'].link.release(req_to)
+                    self.critical("ABORT\t%s:%s:%s-!->%s:%s:%s\t%i KB RETRIED: %i" %
+                            (from_node_id, req_from.processed, len(self.network[from_node_id]['node'].link.queue),
+                                to_node_id, req_to.processed, len(self.network[to_node_id]['node'].link.queue),
+                             packet_size / 1024, failed))
+                    return False
+
+                if not req_from.processed: # does not acquire from link
+                    self.network[from_node_id]['backoff_level'] += 1
+                if not req_to.processed:
+                    self.network[to_node_id]['backoff_level'] += 1
+
+                backoff_level = max(self.network[from_node_id]['backoff_level'],
+                                    self.network[to_node_id]['backoff_level'])
                 #: milliseconds to seconds
-                backoff = float(max(1, random.randint(0, 2**failed-1))) / 1000
-                self.debug("backoff %.3fs" % backoff)
+                backoff = get_backoff(backoff_level)
+                self.warning("BACKOFF\t%s:%s:%s(%.1f)-!->%s:%s:%s(%.1f)\t%i KB for %.3fs" %
+                        (from_node_id, req_from.processed, len(self.network[from_node_id]['node'].link.queue),
+                         self.network[from_node_id]['backoff_level'],
+                            to_node_id, req_to.processed, len(self.network[to_node_id]['node'].link.queue),
+                         self.network[to_node_id]['backoff_level'],
+                         packet_size / 1024, backoff))
                 yield self.env.timeout(backoff)
-            else:
-                the_bandwidth = min(max(throttle_bandwidth, 1), self.network[from_node_id]['node'].bandwidth, self.network[to_node_id]['node'].bandwidth)
+            else: # got resource
+                self.network[from_node_id]['backoff_level'] /= 2
+                self.network[to_node_id]['backoff_level'] /= 2
+                the_bandwidth = min(self.network[from_node_id]['node'].bandwidth, self.network[to_node_id]['node'].bandwidth)
+                if throttle_bandwidth > 0:
+                    the_bandwidth = min(the_bandwidth, throttle_bandwidth)
                 the_latency = float(packet_size) / the_bandwidth
                 yield self.env.timeout(the_latency)
-                self.debug("%s->%s: %.3f KB" % (from_node_id, to_node_id, packet_size/1024))
-                self.network[from_node_id]['node'].link.release(req_from)
-                self.network[to_node_id]['node'].link.release(req_to)
-                return
+                self.debug("NETWORK\t%s:%s->%s:%s: %.1f KB in %4.2fms" %
+                            (from_node_id, len(self.network[from_node_id]['node'].link.queue),
+                             to_node_id, len(self.network[to_node_id]['node'].link.queue),
+                             packet_size/1024, the_latency*1000))
+                break
+        self.network[from_node_id]['node'].link.release(req_from)
+        self.network[to_node_id]['node'].link.release(req_to)
+        self.debug("LAST:%s:%s->%s:%s" %
+                    (from_node_id, len(self.network[from_node_id]['node'].link.queue),
+                        to_node_id, len(self.network[to_node_id]['node'].link.queue)))
+#        self.debug("%s->%s: %.3f KB in %4.2fms" % (from_node_id, to_node_id, packet_size/1024, the_latency*1000))
 
 #        packet_event = {
 #            "event": self.env.event(),

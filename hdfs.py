@@ -9,6 +9,7 @@ Google Python Style Guide:
 __copyright__ = "Zhaoyu Luo"
 
 import argparse
+import random
 
 import simpy
 from simpy.events import AllOf
@@ -29,7 +30,8 @@ class HDFS(node.BaseSim):
         self.env = env
         self.id = "HDFS"
 
-        self.pipeline_packet_size = 2560 * 1024
+        self.pipeline_packet_size = 1024 * 1024
+        self.block_size = 64 * 1024 * 1024
         self.replica_number = replica_number
         self.enable_datanode_cache = enable_datanode_cache
         self.enable_heartbeats = enable_heartbeats
@@ -109,25 +111,21 @@ class HDFS(node.BaseSim):
         return self.env.process(self._replicate_file(file_name, size, node_sequence, throttle_bandwidth))
 
     def _replicate_file(self, file_name, size, node_sequence, throttle_bandwidth=-1):
+        self.info("REPLICATING\t%s\tin %s" % (file_name, node_sequence))
         i = 0
         while i < len(node_sequence) - 1:
             yield self.transfer_data(node_sequence[i], node_sequence[i+1], size, throttle_bandwidth)
             i += 1
         self.info("REPLICATED\t%s\tin %s" % (file_name, node_sequence))
 
-    def put_file(self, file_name, size, submitter=None, throttle_bandwidth=-1):
-        return self.env.process(self._put_file(file_name, size, submitter, throttle_bandwidth))
+    def create_file(self, file_name, size, node_sequence, throttle_bandwidth=-1):
+        return self.env.process(self._create_file(file_name, size, node_sequence, throttle_bandwidth))
 
-    def _put_file(self, file_name, size, submitter=None, throttle_bandwidth=-1):
+    def _create_file(self, file_name, size, node_sequence, throttle_bandwidth=-1):
         """big file would be splitted into packtes <= 64KB"""
         # ask namenode for available datanodes
         yield self.env.timeout(self.switch.latency)
 
-        if submitter:
-            datanode_names = self.namenode.find_datanodes_for_new_file(file_name, size, self.replica_number)
-            datanode_names.insert(0, submitter)
-        else:
-            datanode_names = self.namenode.find_datanodes_for_new_file(file_name, size, self.replica_number + 1)
 
         # pipeline writing (divide into packets) to all datanodes
         sent_file_size = 0
@@ -135,35 +133,51 @@ class HDFS(node.BaseSim):
         i = 1
         while sent_file_size < size:
             sending_size = min(self.pipeline_packet_size, size - sent_file_size)
-            p = self.replicate_file("%s.%i" % (file_name, i), sending_size, datanode_names, throttle_bandwidth)
+            p = self.replicate_file("%s.%i" % (file_name, i), sending_size, node_sequence, throttle_bandwidth)
             pipeline_events.append(p)
             sent_file_size += sending_size
             i += 1
 
         # wait for all ACKs
         yield AllOf(self.env, pipeline_events)
-        if self.client.id in datanode_names:
-            datanode_names.remove(self.client.id)
-        self.namenode.register_file(file_name, datanode_names)
+        if self.client.id in node_sequence:
+            node_sequence.remove(self.client.id)
+        self.namenode.register_file(file_name, node_sequence)
         self.critical("ALL ACKs collected, put_file %s finished" % (file_name))
 
-    def create_files(self, num, size, submitter=None, throttle_bandwidth=-1):
+    def put_files(self, num, size, throttle_bandwidth=-1):
+        """This API is used by client"""
         events = []
         for i in range(num):
-            e = self.put_file("hello.%i.txt" % i, size, submitter, throttle_bandwidth)
+            file_name = "hello.%i.txt" % i
+            datanode_names = self.namenode.find_datanodes_for_new_file(file_name, size, self.replica_number)
+            datanode_names.insert(0, self.client.id)
+            e = self.create_file(file_name, size, datanode_names, throttle_bandwidth)
             events.append(e)
         run_all = AllOf(self.env, events)
         self.run_until(run_all)
         self.critical("%i files stored in NameNode" % len(self.namenode.metadata))
 
+    def regenerate_blocks(self, num):
+        """TODO: it is justly randomly regenerate blocks, not according to block placement and its replica number"""
+        regenerate_events = []
+        i = 1
+        for i in range(num):
+            from_node_id, to_node_id = random.sample(self.namenode.datanodes.keys(), 2)
+            self.info("regenerating block %s->%s" % (from_node_id, to_node_id))
+            r = self.create_file("block.%s.dat" % i, self.block_size, [from_node_id, to_node_id], self.balance_bandwidth)
+            regenerate_events.append(r)
+        run_all = AllOf(self.env, regenerate_events)
+        self.run_until(run_all)
+
     def limplock_create_30_files(self):
         """create 30 64-MB files"""
-        self.create_files(30, 64*1024*1024, submitter=self.client.id)
+        self.put_files(30, self.block_size)
 
     def limplock_regenerate_90_blocks(self):
         """regenerate 90 blocks"""
         self.info("regenerating 90 blocks: throttle_bandwidth: %s" % self.balance_bandwidth)
-        self.create_files(90, 64*1024*1024, throttle_bandwidth=self.balance_bandwidth)
+        self.regenerate_blocks(90)
 
 
 def create_hdfs(env=None, number_of_datanodes=3, replica_number=3, enable_block_report=True, enable_heartbeats=True,
@@ -184,6 +198,10 @@ def create_hdfs(env=None, number_of_datanodes=3, replica_number=3, enable_block_
     return hdfs
 
 
+def create_silent_hdfs(**kwargs):
+    return create_hdfs(do_debug=False, do_info=False, do_warning=True, do_critical=True, **kwargs)
+
+
 def main():
     """Main function only in command line"""
     from sys import argv
@@ -192,8 +210,13 @@ def main():
     args = parser.parse_args()
     print(args)
 
-    hdfs = create_hdfs(number_of_datanodes=1, default_disk_speed=args.disk_speed, do_debug=True)
-    hdfs.run_until(10)
+    hdfs = create_hdfs(number_of_datanodes=20, default_disk_speed=args.disk_speed, do_debug=True,
+                       do_warning=True,
+                       #enable_heartbeats=False, enable_block_report=False
+                       )
+    #hdfs.limplock_create_30_files()
+    #hdfs.limplock_regenerate_90_blocks()
+    hdfs.put_files(1, 100*1024*1024)
 
 
 if __name__ == '__main__':
